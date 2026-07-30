@@ -7,6 +7,9 @@
  * working } where `working` explains the arithmetic after you commit.
  */
 
+import { equityVsRange } from './equity.js'
+
+
 const DRAW_TYPES = [
   { name: 'flush draw', outs: 9 },
   { name: 'open-ended straight draw', outs: 8 },
@@ -37,15 +40,21 @@ function round(n, dp = 0) {
   return Math.round(n * f) / f
 }
 
-/** Builds four plausible options around the true answer, shuffled. */
-function optionsAround(correct, spread, formatter) {
+/**
+ * Builds four plausible options around the true answer, shuffled.
+ *
+ * `max` matters: percentage answers cap at 100, but an implied-odds answer is
+ * measured in big blinds and can legitimately run past a full stack. Clamping
+ * those to 100 used to reject every distractor and leave a single option.
+ */
+function optionsAround(correct, spread, formatter, max = 100) {
   const set = new Set([correct])
   let guard = 0
-  while (set.size < 4 && guard < 50) {
+  while (set.size < 4 && guard < 200) {
     guard += 1
     const delta = (Math.random() < 0.5 ? -1 : 1) * (1 + Math.floor(Math.random() * spread))
     const candidate = correct + delta
-    if (candidate > 0 && candidate < 100) set.add(candidate)
+    if (candidate > 0 && candidate < max) set.add(candidate)
   }
   return [...set]
     .sort(() => Math.random() - 0.5)
@@ -113,29 +122,79 @@ function bluffQuestion() {
 /** Implied odds: how much more do you need to win to justify a call? */
 function impliedOddsQuestion() {
   const pot = pick([20, 24, 30, 36, 40, 50, 60])
-  const bet = round(pot * pick([0.5, 0.66, 0.75, 1]))
+  const bet = round(pot * pick([0.4, 0.5, 0.66, 0.75]))
   const outs = pick([4, 8, 9])
   const equity = outs * 2
-  const needed = Math.max(
-    1,
-    Math.round((bet * (100 - equity)) / equity - (pot + bet)),
-  )
+  const totalNeeded = (bet * (100 - equity)) / equity
+  const needed = Math.max(1, Math.round(totalNeeded - (pot + bet)))
+
+  // Above a stack the answer is really "you cannot get there — fold".
+  const unrealistic = needed > 100
 
   return {
     type: 'Implied odds',
     prompt: `Facing ${bet}bb into ${pot}bb on the turn with ${outs} outs (~${equity}% equity).`,
     detail: 'Roughly how much extra do you need to win on the river to justify the call?',
-    options: optionsAround(needed, Math.max(4, Math.round(needed / 3)), (v) => `${v}bb`),
+    options: optionsAround(needed, Math.max(4, Math.round(needed / 3)), (v) => `${v}bb`, 400),
     answer: needed,
-    working: `At ${equity}% you need ${Math.round(
-      (bet * (100 - equity)) / equity,
-    )}bb of total return to break even on a ${bet}bb call; the pot already offers ${
-      pot + bet
-    }bb, so you need roughly ${needed}bb more from the river. Implied odds only count against opponents who actually pay you off — never assume them against a nit.`,
+    working:
+      `At ${equity}% you need ${Math.round(totalNeeded)}bb of total return to break even on a ` +
+      `${bet}bb call; the pot already offers ${pot + bet}bb, so you need roughly ${needed}bb more ` +
+      `from the river. ` +
+      (unrealistic
+        ? 'That is more than a 100bb stack, which is the real answer here: the call cannot be made profitable, so fold.'
+        : 'Implied odds only count against opponents who actually pay you off — never assume them against a nit.'),
   }
 }
 
-const GENERATORS = [potOddsQuestion, outsQuestion, bluffQuestion, impliedOddsQuestion]
+/**
+ * Equity estimation against a real hand, computed by Monte Carlo rather than a
+ * lookup table — so the answer is the true equity of the exact spot shown.
+ */
+function equityQuestion() {
+  const spots = [
+    { hero: ['As', 'Ks'], villain: ['Qd', 'Qc'], label: 'AKs vs QQ', board: [] },
+    { hero: ['As', 'Ad'], villain: ['Kd', 'Kc'], label: 'AA vs KK', board: [] },
+    { hero: ['Js', 'Ts'], villain: ['Ad', 'Kc'], label: 'JTs vs AKo', board: [] },
+    { hero: ['7c', '7d'], villain: ['Ah', 'Kd'], label: '77 vs AKo', board: [] },
+    { hero: ['Ah', '5h'], villain: ['Kd', 'Kc'], label: 'A5s vs KK', board: [] },
+    {
+      hero: ['As', '4s'],
+      villain: ['Kh', 'Qd'],
+      label: 'nut flush draw vs top pair',
+      board: ['Ks', '9s', '2d'],
+    },
+    {
+      hero: ['9h', '8h'],
+      villain: ['Ac', 'Kd'],
+      label: 'open-ender vs two overcards',
+      board: ['7c', '6d', '2s'],
+    },
+    {
+      hero: ['Qd', 'Qs'],
+      villain: ['Ah', 'Kh'],
+      label: 'overpair vs two overs and a flush draw',
+      board: ['Jh', '7h', '3c'],
+    },
+  ]
+  const spot = pick(spots)
+  const { equity } = equityVsRange(spot.hero, spot.board, [spot.villain], 2500)
+  const answer = Math.round(equity * 100)
+  const street = spot.board.length === 0 ? 'preflop, all in' : 'on the flop, all in'
+
+  return {
+    type: 'Equity',
+    prompt: `${spot.hero.join(' ')} against ${spot.villain.join(' ')}${
+      spot.board.length ? ` on ${spot.board.join(' ')}` : ''
+    }.`,
+    detail: `Roughly what is your equity ${street}?`,
+    options: optionsAround(answer, 9, (v) => `${v}%`),
+    answer,
+    working: `${spot.label} runs at about ${answer}%. Knowing the common all-in matchups by heart means you never have to guess whether a stack-off is close — coin flips, dominated aces, and draws against made hands all cluster around numbers worth memorising.`,
+  }
+}
+
+const GENERATORS = [potOddsQuestion, outsQuestion, bluffQuestion, impliedOddsQuestion, equityQuestion]
 
 export const DRILL_TYPES = [
   { id: 'all', label: 'Mixed' },
@@ -143,6 +202,7 @@ export const DRILL_TYPES = [
   { id: 'outs', label: 'Outs → equity', generator: outsQuestion },
   { id: 'bluff', label: 'Bluff math', generator: bluffQuestion },
   { id: 'implied', label: 'Implied odds', generator: impliedOddsQuestion },
+  { id: 'equity', label: 'Equity', generator: equityQuestion },
 ]
 
 export function generateQuestion(typeId = 'all') {

@@ -60,6 +60,17 @@ export const CATEGORIES = {
     chip: 'border-orange-500/40 bg-orange-500/15 text-orange-200',
     bar: 'bg-orange-400',
   },
+  I: {
+    id: 'I',
+    format: 'online',
+    name: 'Turn Play',
+    title: 'Turn Decisions',
+    tagline: 'The street where micro winrates leak',
+    icon: 'GitFork',
+    dot: 'bg-teal-400',
+    chip: 'border-teal-500/40 bg-teal-500/15 text-teal-200',
+    bar: 'bg-teal-400',
+  },
   H: {
     id: 'H',
     format: 'online',
@@ -216,6 +227,18 @@ export const LEAKS = {
     label: 'Giving up too early',
     message:
       'You are checking back turns and rivers against opponents who fold constantly. One more barrel prints at micros.',
+  },
+  turnGiveUp: {
+    id: 'turnGiveUp',
+    label: 'Shutting down on turns',
+    message:
+      'You check back turns with hands that still want value or protection. The turn is the biggest bet you get to make before the river.',
+  },
+  turnOverBarrel: {
+    id: 'turnOverBarrel',
+    label: 'Barreling turns without equity',
+    message:
+      'You are firing second barrels with no draw against players who called the flop. Pick turns that improve your hand or your story.',
   },
   bloatingOOP: {
     id: 'bloatingOOP',

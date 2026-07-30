@@ -6,6 +6,7 @@ import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
 import { FORMATS } from '@/data/categories'
 import { loadSlice } from '@/lib/storage'
+import { deriveStats, detectLeaks } from '@/lib/simStats'
 import { cn } from '@/lib/utils'
 
 function Tile({ icon: Icon, label, value, sub, tone = 'text-foreground' }) {
@@ -44,7 +45,7 @@ export function ProgressView({ trainer, onNavigate }) {
   const [otherStats, setOtherStats] = useState(() => ({
     ranges: loadSlice('ranges', { total: 0, correct: 0 }),
     math: loadSlice('math', { total: 0, correct: 0, bestStreak: 0 }),
-    sim: loadSlice('sim', null)?.stats ?? null,
+    sim: loadSlice('sim', null)?.totals ?? null,
   }))
 
   // Refresh from storage whenever this view mounts — the quiz components own
@@ -53,12 +54,14 @@ export function ProgressView({ trainer, onNavigate }) {
     setOtherStats({
       ranges: loadSlice('ranges', { total: 0, correct: 0 }),
       math: loadSlice('math', { total: 0, correct: 0, bestStreak: 0 }),
-      sim: loadSlice('sim', null)?.stats ?? null,
+      sim: loadSlice('sim', null)?.totals ?? null,
     })
   }, [])
 
-  const sim = otherStats.sim
-  const simBB = sim ? sim.netChips / 100 : 0
+  const simTotals = otherStats.sim
+  const sim = simTotals && simTotals.hands > 0 ? deriveStats(simTotals) : null
+  const simLeaks = sim ? detectLeaks(sim) : []
+  const simBB = sim ? sim.bb : 0
   const other = FORMATS[format === 'online' ? 'live' : 'online']
   const otherFormatHands = history.filter((h) => h.format === other.id).length
 
@@ -100,7 +103,7 @@ export function ProgressView({ trainer, onNavigate }) {
         />
       </div>
 
-      {sim && sim.hands > 0 ? (
+      {sim ? (
         <Card>
           <CardContent className="space-y-2 p-4 sm:p-5">
             <h3 className="flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-[0.18em] text-muted-foreground">
@@ -116,14 +119,24 @@ export function ProgressView({ trainer, onNavigate }) {
               />
               <SimStat
                 label="bb/100"
-                value={sim.hands >= 50 ? ((simBB / sim.hands) * 100).toFixed(0) : '—'}
+                value={sim.hands >= 50 ? sim.bbPer100.toFixed(0) : '—'}
                 tone={simBB > 0 ? 'text-emerald-300' : 'text-rose-300'}
               />
               <SimStat
                 label="VPIP/PFR"
-                value={`${Math.round((sim.vpip / sim.hands) * 100)}/${Math.round((sim.pfr / sim.hands) * 100)}`}
+                value={`${Math.round(sim.vpip)}/${Math.round(sim.pfr)}`}
               />
             </div>
+            {simLeaks.length > 0 ? (
+              <div className="space-y-1.5">
+                {simLeaks.map((leak) => (
+                  <p key={leak.id} className="text-[11px] leading-relaxed text-rose-100/85">
+                    <span className="font-bold">{leak.label}: </span>
+                    {leak.message}
+                  </p>
+                ))}
+              </div>
+            ) : null}
             <p className="text-[10px] leading-relaxed text-muted-foreground">
               A winrate needs thousands of hands before it means anything — below a few hundred this
               is variance, not skill. VPIP/PFR stabilise much faster: a solid 6-max reg runs near

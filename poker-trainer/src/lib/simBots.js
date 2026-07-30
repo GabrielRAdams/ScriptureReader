@@ -37,6 +37,7 @@ export const ARCHETYPES = {
     callDown: 'strong',
     raiseValue: 0.55,
     foldToAggression: 0.75,
+    adapts: true,
   },
   tag: {
     id: 'tag',
@@ -56,6 +57,7 @@ export const ARCHETYPES = {
     callDown: 'medium',
     raiseValue: 0.7,
     foldToAggression: 0.55,
+    adapts: true,
   },
   station: {
     id: 'station',
@@ -128,6 +130,44 @@ export const BOT_NAMES = {
 }
 
 const BUCKET_ORDER = ['air', 'weak', 'draw', 'medium', 'strong', 'monster']
+
+/**
+ * Regulars adjust to how you have been playing; recreational players never do.
+ * That asymmetry is the point — a station will pay you off forever, but keep
+ * running the same bluff at a reg and he starts calling.
+ *
+ * `reads` comes from the hero's own tracked stats, so the bots are exploiting
+ * exactly the numbers the leak report shows you.
+ */
+export function adjustProfile(profile, reads, heroIsOpponent) {
+  if (!profile.adapts || !reads || !heroIsOpponent || reads.hands < 25) return profile
+  const adjusted = { ...profile }
+
+  // You fold to c-bets too much: he bets more, and more often as a bluff.
+  if (reads.foldToCbet != null && reads.foldToCbet > 60) {
+    adjusted.cbet = Math.min(0.95, profile.cbet + 0.15)
+    adjusted.bluff = Math.min(0.8, profile.bluff + 0.15)
+  }
+
+  // You barely bluff: he folds his marginal hands to your aggression.
+  if (reads.aggressionFactor != null && reads.aggressionFactor < 0.8) {
+    adjusted.foldToAggression = Math.min(0.9, profile.foldToAggression + 0.18)
+  }
+
+  // You bluff constantly: he starts calling you down lighter.
+  if (reads.aggressionFactor != null && reads.aggressionFactor > 2.5) {
+    adjusted.foldToAggression = Math.max(0.15, profile.foldToAggression - 0.22)
+    adjusted.callDown = 'weak'
+  }
+
+  // You play far too many hands: he 3-bets you wider.
+  if (reads.vpip != null && reads.vpip > 34) {
+    adjusted.threeBet = Math.min(0.25, profile.threeBet * 1.8)
+  }
+
+  return adjusted
+}
+
 function bucketAtLeast(bucket, floor) {
   return BUCKET_ORDER.indexOf(bucket) >= BUCKET_ORDER.indexOf(floor)
 }
@@ -273,12 +313,19 @@ function sizeBet(legal, actor, pot, fraction) {
   return Math.max(legal.minRaiseTo, Math.min(target, legal.maxRaiseTo))
 }
 
-/** Picks an action for the bot currently on turn. */
-export function botAction(state, rng = Math.random) {
+/**
+ * Picks an action for the bot currently on turn.
+ *
+ * `reads` is optional: pass the hero's tracked stats and any adapting regulars
+ * at the table will use them when the hero is still in the pot.
+ */
+export function botAction(state, rng = Math.random, reads = null) {
   const legal = legalActions(state)
   if (!legal) return null
   const actor = legal.player
-  const profile = ARCHETYPES[actor.archetype] ?? ARCHETYPES.tag
+  const base = ARCHETYPES[actor.archetype] ?? ARCHETYPES.tag
+  const heroLive = state.players.some((p) => p.isHero && !p.folded)
+  const profile = adjustProfile(base, reads, heroLive)
 
   const decision =
     state.street === 'preflop'

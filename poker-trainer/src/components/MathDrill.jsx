@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useState } from 'react'
-import { Calculator, CircleCheck, CircleX, RotateCcw } from 'lucide-react'
+import { Calculator, CircleCheck, CircleX, Landmark, RotateCcw, Target } from 'lucide-react'
 
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
+import { BankrollTool } from '@/components/BankrollTool'
 import { DRILL_TYPES, generateQuestion } from '@/lib/mathDrills'
 import { loadSlice, saveSlice } from '@/lib/storage'
 import { cn } from '@/lib/utils'
@@ -12,6 +13,7 @@ const STORAGE_KEY = 'math'
 const EMPTY_STATS = { total: 0, correct: 0, streak: 0, bestStreak: 0 }
 
 export function MathDrill() {
+  const [mode, setMode] = useState('drill')
   const [typeId, setTypeId] = useState('all')
   const [question, setQuestion] = useState(() => generateQuestion('all'))
   const [choice, setChoice] = useState(null)
@@ -66,6 +68,37 @@ export function MathDrill() {
 
   return (
     <div className="space-y-3">
+      {/* Drills sharpen in-hand maths; the bankroll tool answers the question
+          that decides whether you survive long enough to use them. */}
+      <div className="inline-flex rounded-lg bg-muted/70 p-1">
+        <button
+          type="button"
+          onClick={() => setMode('drill')}
+          className={cn(
+            'flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-semibold transition-all',
+            mode === 'drill' ? 'bg-primary text-primary-foreground' : 'text-muted-foreground',
+          )}
+        >
+          <Target className="h-3.5 w-3.5" aria-hidden="true" />
+          Drills
+        </button>
+        <button
+          type="button"
+          onClick={() => setMode('bankroll')}
+          className={cn(
+            'flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-semibold transition-all',
+            mode === 'bankroll' ? 'bg-primary text-primary-foreground' : 'text-muted-foreground',
+          )}
+        >
+          <Landmark className="h-3.5 w-3.5" aria-hidden="true" />
+          Bankroll
+        </button>
+      </div>
+
+      {mode === 'bankroll' ? <BankrollTool /> : null}
+
+      {mode === 'drill' ? (
+        <>
       <div className="no-scrollbar -mx-3 flex gap-2 overflow-x-auto px-3 pb-1 sm:mx-0 sm:px-0">
         {DRILL_TYPES.map((type) => (
           <button
@@ -180,6 +213,8 @@ export function MathDrill() {
           <RotateCcw className="h-3.5 w-3.5" aria-hidden="true" />
           Reset math stats
         </Button>
+      ) : null}
+        </>
       ) : null}
     </div>
   )

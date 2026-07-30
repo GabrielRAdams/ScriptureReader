@@ -21,6 +21,7 @@ no account.
 npm install
 npm run dev      # http://localhost:5173
 npm run build    # production bundle in dist/
+npm test         # vitest — evaluator, engine, data and bankroll maths
 npm run lint
 ```
 
@@ -29,7 +30,7 @@ mobile-first for one-handed use.
 
 ## The five tools
 
-### 1. Drill — 45 hand scenarios
+### 1. Drill — 50 hand scenarios
 
 Four-colour cards on a felt table, a context header (stakes, position,
 effective stack, pot, full action history, and a read on the opponent), and
@@ -37,13 +38,14 @@ touch-sized action buttons. Every action is graded **Optimal Exploitative
 Play** / **Acceptable–High Variance** / **Live Blunder**, with a specific
 explanation and a recommended-frequency bar.
 
-**Online micros (21 hands)**
+**Online micros (26 hands)**
 
 | Category | Focus |
 | --- | --- |
 | E — Preflop | Open sizing, big-blind defense, facing 3-bets, squeezing, and why cold-calling loses to rake |
 | F — C-Betting | Small range bets on dry boards, checking back the textures that hit them, sizing up vs stations |
 | G — Barreling | Delayed c-bets, turn probes, barreling with equity — and never bluffing a station |
+| I — Turn Play | Second barrels for value, barrel cards that fit your story, knowing when to shut down |
 | H — Bluff-Catching | River raises are value, small bets demand calls, floating donk bets, calling down maniacs |
 
 **Live cash (24 hands)**
@@ -70,6 +72,21 @@ Your own stats run across the top like a tracker: hands, net bb, bb/100,
 VPIP/PFR, and WTSD. A preflop coach (toggleable) flags any open that disagrees
 with the RFI chart for your seat, so the Ranges tab and the table stay in sync.
 
+**The session report** is where practice turns into feedback. It shows your
+full stat line against the bands a winning micro reg lives in — 3-bet %, flop
+c-bet %, fold-to-c-bet %, BB fold %, WTSD, W$SD — with the sample size behind
+each one, and names the leaks it can actually prove ("You fold to 71% of flop
+c-bets"). Every rule carries a minimum sample, so a bad hour never gets
+diagnosed as a habit.
+
+**The regulars adapt.** After 25 hands the TAG and the nit start using your own
+tracked numbers against you: fold to too many c-bets and they bet more, stop
+bluffing and they fold more, bluff constantly and they call you down. The fish
+never adjust — which is the lesson.
+
+Each hand also reports the flop equity your hand actually held, so losing with
+the best of it stops feeling like a mistake.
+
 The bots are rule-based caricatures, not solvers. Beating them is practice at
 exploiting a soft pool, not proof of a winning strategy.
 
@@ -77,19 +94,26 @@ Keyboard: `F` fold, `C` check/call, `Enter` next hand.
 
 ### 3. Ranges — preflop charts and quiz
 
-Six 13×13 charts: RFI for UTG / HJ / CO / BTN / SB, plus BB defense vs a button
-open (3-bet / call / fold). Quiz mode deals a random hand and asks for the
-action, tracking accuracy per chart.
+Nine 13×13 charts: RFI for UTG / HJ / CO / BTN / SB, BB defense vs a button
+open, a BTN 3-betting range, a CO facing-a-3-bet range, and blind-vs-blind.
+Quiz mode deals a random hand and asks for the action, tracking accuracy per
+chart.
 
 The charts are a shade tighter than a solver's, especially in early position —
 rake at NL2-NL25 turns the marginal bottom of an opening range into a loser.
 
-### 4. Math — the four calculations that matter
+### 4. Math — calculations and bankroll
 
-Randomly generated so it never runs out: pot odds, the rule of 2 and 4, bluff
-break-even frequency, and implied odds. Each answer shows the arithmetic and
-ties it back to a real decision ("this is the whole calculation behind *never
-bluff a station*").
+**Drills**, randomly generated so they never run out: pot odds, the rule of 2
+and 4, bluff break-even frequency, implied odds, and all-in equity (computed by
+Monte Carlo against the exact hands shown, not looked up). Each answer shows
+the arithmetic and ties it back to a real decision.
+
+**Bankroll**, because more micro players quit from playing too high than from
+any strategic leak. Risk of ruin, the roll needed for 5% and 1% risk, expected
+swing over 10k hands, and the odds of being down over a sample despite winning.
+At 5bb/100 with 30 buy-ins you go broke 2.5% of the time — and you are down
+after 10,000 hands roughly 29% of the time.
 
 ### 5. Progress — what to work on
 
@@ -143,13 +167,34 @@ never leak into an online drill.
   (including all-ins that do not reopen action), street progression, side pots
   built from each player's total contribution, and odd-chip distribution to the
   first winner left of the button. Pure and rng-injectable, so it runs headlessly.
-- `src/lib/simBots.js` — archetype definitions and decision logic.
+- `src/lib/simBots.js` — archetype definitions, decision logic, and the
+  read-based adjustments that adapting regulars apply.
+- `src/lib/simStats.js` — hand-log summarisation, derived stats, and the leak
+  rules with their minimum samples.
+- `src/lib/equity.js` — Monte Carlo equity against random hands or a range.
+- `src/lib/bankroll.js` — risk of ruin, required bankroll, and variance.
 - `src/lib/handStrength.js` — Chen-formula preflop ranking, combo-weighted, so
   bots can reason in "top X% of hands".
 
-The engine has been run for 20,000 hands checking that chips are conserved
-exactly, no stack goes negative or fractional, every pot is fully awarded, and
-no action is ever rejected mid-hand.
+Every hand is dealt 100bb effective. Real winners cash out and get replaced by
+a fresh buy-in, and letting stacks drift to 400bb would quietly turn this into
+deep-stack practice — a different game. Profit is tracked separately.
+
+## Tests
+
+`npm test` runs 128 tests covering the parts where a silent bug would teach
+something false:
+
+- the evaluator against brute-force best-of-21-subsets, plus the known 7-card
+  category distribution and the classic edge cases (wheel straights, two sets,
+  three pairs, six flush cards);
+- the equity engine against published matchups (AA vs KK ≈ 82%, AKs vs QQ ≈
+  46%), symmetry, and card removal;
+- the betting engine over 3,000 hands — chips conserved, pots fully awarded, no
+  negative or fractional stacks — plus min-raise rules, short all-ins that do
+  not reopen action, blind posting and position naming;
+- every scenario's data integrity and every range chart's notation;
+- the maths behind the drills and the bankroll formulas.
 
 ## Adding ranges
 

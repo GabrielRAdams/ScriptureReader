@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import {
   ChevronDown,
   CircleCheck,
+  ClipboardList,
   Coins,
   GraduationCap,
   RefreshCw,
@@ -12,6 +13,7 @@ import {
 
 import { PlayingCard } from '@/components/PlayingCard'
 import { ActionControls } from '@/components/sim/ActionControls'
+import { AdaptingBadge, SessionReport } from '@/components/sim/SessionReport'
 import { SeatView } from '@/components/sim/SeatView'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -37,8 +39,9 @@ function HudStat({ label, value, tone = 'text-foreground', title }) {
 
 export function SimTable() {
   const sim = useSim()
-  const { hand, legal, isHeroTurn, stats, coachNote, coachOn } = sim
+  const { hand, legal, isHeroTurn, stats, leaks, pending, coachNote, coachOn, lastEquity } = sim
   const [logOpen, setLogOpen] = useState(false)
+  const [reportOpen, setReportOpen] = useState(false)
 
   const complete = hand?.street === 'complete'
 
@@ -110,12 +113,12 @@ export function SimTable() {
         />
         <HudStat
           label="VPIP/PFR"
-          value={`${stats.vpipPct}/${stats.pfrPct}`}
+          value={`${stats.vpip == null ? '—' : Math.round(stats.vpip)}/${stats.pfr == null ? '—' : Math.round(stats.pfr)}`}
           title="How often you put money in preflop, and how often you raised. A solid 6-max reg runs about 22/18."
         />
         <HudStat
           label="WTSD"
-          value={stats.flops ? `${stats.wtsdPct}%` : '—'}
+          value={stats.wtsd == null ? '—' : `${Math.round(stats.wtsd)}%`}
           title="Went to showdown after seeing the flop. Above ~30% usually means calling too much."
         />
       </div>
@@ -243,6 +246,17 @@ export function SimTable() {
               </span>
             </div>
 
+            {lastEquity != null ? (
+              <p className="rounded-lg border border-white/5 bg-black/25 px-3 py-2 text-[11px] leading-relaxed text-muted-foreground">
+                <span className="font-semibold text-foreground/80">
+                  Flop equity: {Math.round(lastEquity * 100)}%
+                </span>{' '}
+                — what your hand was worth against {hand.players.filter((p) => !p.folded && !p.isHero).length}{' '}
+                random opponent hand{hand.players.filter((p) => !p.folded && !p.isHero).length === 1 ? '' : 's'} when
+                the flop landed. Losing with the best of it is not a mistake.
+              </p>
+            ) : null}
+
             <Button size="lg" className="w-full font-bold" onClick={sim.nextHand}>
               Next Hand
             </Button>
@@ -312,7 +326,34 @@ export function SimTable() {
         ) : null}
       </div>
 
+      <div className="rounded-lg border border-white/5 bg-black/25">
+        <button
+          type="button"
+          onClick={() => setReportOpen((v) => !v)}
+          aria-expanded={reportOpen}
+          className="flex w-full items-center gap-2 px-3 py-2 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground"
+        >
+          <ClipboardList className="h-3.5 w-3.5" aria-hidden="true" />
+          Session report
+          {leaks.length > 0 ? (
+            <span className="rounded-full bg-rose-500/25 px-1.5 py-px text-[9px] font-bold text-rose-200">
+              {leaks.length} leak{leaks.length === 1 ? '' : 's'}
+            </span>
+          ) : null}
+          <ChevronDown
+            className={cn('ml-auto h-3.5 w-3.5 transition-transform', reportOpen && 'rotate-180')}
+            aria-hidden="true"
+          />
+        </button>
+        {reportOpen ? (
+          <div className="px-3 pb-3">
+            <SessionReport stats={stats} leaks={leaks} pending={pending} />
+          </div>
+        ) : null}
+      </div>
+
       <div className="flex flex-wrap items-center gap-2">
+        <AdaptingBadge active={sim.botsAdapting} />
         <Badge variant={coachOn ? 'felt' : 'slate'}>
           <button type="button" onClick={sim.toggleCoach} className="flex items-center gap-1">
             <GraduationCap className="h-3 w-3" aria-hidden="true" />

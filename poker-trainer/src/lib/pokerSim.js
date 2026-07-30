@@ -194,14 +194,14 @@ export function applyAction(state, action) {
     case 'fold': {
       p.folded = true
       p.lastAction = 'Fold'
-      s.log.push({ type: 'action', seat: p.seat, name: p.name, text: 'folds' })
+      s.log.push({ type: 'action', action: 'fold', street: s.street, seat: p.seat, name: p.name, text: 'folds' })
       break
     }
 
     case 'check': {
       if (toCall > 0) return state // illegal; ignore rather than corrupt state
       p.lastAction = 'Check'
-      s.log.push({ type: 'action', seat: p.seat, name: p.name, text: 'checks' })
+      s.log.push({ type: 'action', action: 'check', street: s.street, seat: p.seat, name: p.name, text: 'checks' })
       break
     }
 
@@ -213,6 +213,9 @@ export function applyAction(state, action) {
       p.lastAction = toCall === 0 ? 'Check' : 'Call'
       s.log.push({
         type: 'action',
+        action: toCall === 0 ? 'check' : 'call',
+        street: s.street,
+        amount: toCall,
         seat: p.seat,
         name: p.name,
         text: toCall === 0 ? 'checks' : `calls ${chips(toCall)}${p.allIn ? ' (all in)' : ''}`,
@@ -246,6 +249,9 @@ export function applyAction(state, action) {
       p.lastAction = wasBet ? 'Bet' : 'Raise'
       s.log.push({
         type: 'action',
+        action: wasBet ? 'bet' : 'raise',
+        street: s.street,
+        amount: target,
         seat: p.seat,
         name: p.name,
         text: `${wasBet ? 'bets' : 'raises to'} ${chips(target)}${p.allIn ? ' (all in)' : ''}`,

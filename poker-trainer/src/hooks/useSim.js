@@ -3,27 +3,14 @@ import { useCallback, useEffect, useMemo, useReducer, useRef } from 'react'
 import { BB, handCode } from '@/lib/cards'
 import { CHARTS } from '@/data/ranges'
 import { buildChart } from '@/lib/range'
+import { equityVsRandom } from '@/lib/equity'
 import { applyAction, legalActions, startHand } from '@/lib/pokerSim'
 import { ARCHETYPES, BOT_NAMES, DEFAULT_TABLE, botAction } from '@/lib/simBots'
+import { EMPTY_TOTALS, addTotals, deriveStats, detectLeaks, pendingChecks, summariseHand } from '@/lib/simStats'
 import { loadSlice, saveSlice } from '@/lib/storage'
 
 const STORAGE_KEY = 'sim'
 const BUY_IN = 100 * BB
-/** Cash-game convention: top back up to a full stack between hands. */
-const REBUY_BELOW = 100 * BB
-
-const EMPTY_STATS = {
-  hands: 0,
-  netChips: 0,
-  vpip: 0,
-  pfr: 0,
-  flops: 0,
-  showdowns: 0,
-  showdownsWon: 0,
-  handsWon: 0,
-  best: 0,
-  worst: 0,
-}
 
 function buildSeats(rng = Math.random) {
   const used = new Set()
@@ -40,79 +27,37 @@ function buildSeats(rng = Math.random) {
 
 /** RFI charts keyed by position, for the preflop coach. */
 const RFI_BY_POSITION = Object.fromEntries(
-  CHARTS.filter((c) => c.id.startsWith('rfi-')).map((c) => [
-    c.label,
-    buildChart(c.actions),
-  ]),
+  CHARTS.filter((c) => c.id.startsWith('rfi-')).map((c) => [c.label, buildChart(c.actions)]),
 )
 
 function init(persisted) {
-  const seats = buildSeats()
   return {
-    seats,
+    seats: buildSeats(),
     buttonSeat: 1,
     handNumber: 1,
     hand: null,
-    stats: persisted?.stats ?? EMPTY_STATS,
+    totals: persisted?.totals ?? EMPTY_TOTALS,
     coachOn: persisted?.coachOn ?? true,
     lastCoachNote: null,
-    autoNext: false,
+    lastEquity: null,
   }
-}
-
-/** Everything the hero did this hand that we want to count in the HUD. */
-function summarise(hand, heroSeat) {
-  const hero = hand.players.find((p) => p.seat === heroSeat)
-  const heroActions = hand.log.filter((l) => l.type === 'action' && l.seat === heroSeat)
-  const preflopEnd = hand.log.findIndex((l) => l.type === 'street' && l.street === 'flop')
-  const preflopActions = hand.log.filter(
-    (l, i) => l.type === 'action' && l.seat === heroSeat && (preflopEnd === -1 || i < preflopEnd),
-  )
-
-  const vpip = preflopActions.some(
-    (l) => l.text.startsWith('calls') || l.text.startsWith('raises') || l.text.startsWith('bets'),
-  )
-  const pfr = preflopActions.some((l) => l.text.startsWith('raises'))
-  const sawFlop = hand.board.length >= 3 && !heroFoldedBeforeFlop(hand, heroSeat)
-  const showdown = Boolean(hand.result?.showdown) && !hero.folded
-  const won = (hand.result?.payouts?.[heroSeat] ?? 0) > 0
-
-  return {
-    vpip,
-    pfr,
-    sawFlop,
-    showdown,
-    won,
-    delta: hand.result?.deltas?.[heroSeat] ?? 0,
-    heroActions,
-  }
-}
-
-function heroFoldedBeforeFlop(hand, heroSeat) {
-  const flopIndex = hand.log.findIndex((l) => l.type === 'street' && l.street === 'flop')
-  if (flopIndex === -1) return true
-  return hand.log
-    .slice(0, flopIndex)
-    .some((l) => l.type === 'action' && l.seat === heroSeat && l.text === 'folds')
 }
 
 function reducer(state, action) {
   switch (action.type) {
     case 'DEAL': {
-      // Cash-game top-up, and bust-out replacement for anyone who lost it all.
-      const seats = state.seats.map((s) => ({
-        ...s,
-        stack: s.stack < REBUY_BELOW ? BUY_IN : s.stack,
-      }))
+      // Every hand starts 100bb effective. Winners at a real micro table cash
+      // out and get replaced by someone with a fresh buy-in, and letting stacks
+      // drift into 400bb territory would turn this into deep-stack practice —
+      // a different game from the one being trained. Profit is tracked
+      // separately in `totals`, so nothing is lost by resetting.
+      const seats = state.seats.map((s) => ({ ...s, stack: BUY_IN }))
       return {
         ...state,
         seats,
-        hand: startHand({
-          seats,
-          buttonSeat: state.buttonSeat,
-          handNumber: state.handNumber,
-        }),
+        hand: startHand({ seats, buttonSeat: state.buttonSeat, handNumber: state.handNumber }),
         lastCoachNote: null,
+        lastEquity: null,
       }
     }
 
@@ -121,22 +66,12 @@ function reducer(state, action) {
       const next = applyAction(state.hand, action.action)
       if (next === state.hand) return state
 
-      let stats = state.stats
+      let totals = state.totals
       let seats = state.seats
+      let lastEquity = state.lastEquity
+
       if (next.street === 'complete') {
-        const summary = summarise(next, 0)
-        stats = {
-          hands: stats.hands + 1,
-          netChips: stats.netChips + summary.delta,
-          vpip: stats.vpip + (summary.vpip ? 1 : 0),
-          pfr: stats.pfr + (summary.pfr ? 1 : 0),
-          flops: stats.flops + (summary.sawFlop ? 1 : 0),
-          showdowns: stats.showdowns + (summary.showdown ? 1 : 0),
-          showdownsWon: stats.showdownsWon + (summary.showdown && summary.won ? 1 : 0),
-          handsWon: stats.handsWon + (summary.won ? 1 : 0),
-          best: Math.max(stats.best, summary.delta),
-          worst: Math.min(stats.worst, summary.delta),
-        }
+        totals = addTotals(totals, summariseHand(next, 0))
         seats = next.players.map((p) => ({
           id: p.id,
           name: p.name,
@@ -144,9 +79,16 @@ function reducer(state, action) {
           stack: p.stack,
           isHero: p.isHero,
         }))
+
+        // Only worth computing when hero actually contested the pot.
+        const hero = next.players.find((p) => p.isHero)
+        const opponents = next.players.filter((p) => !p.folded && !p.isHero).length
+        if (!hero.folded && opponents > 0 && next.board.length === 5) {
+          lastEquity = equityVsRandom(hero.hole, next.board.slice(0, 3), opponents, 1500).equity
+        }
       }
 
-      return { ...state, hand: next, stats, seats }
+      return { ...state, hand: next, totals, seats, lastEquity }
     }
 
     case 'COACH':
@@ -164,7 +106,7 @@ function reducer(state, action) {
       return { ...state, coachOn: !state.coachOn }
 
     case 'NEW_TABLE':
-      return { ...init({ stats: state.stats, coachOn: state.coachOn }), stats: state.stats }
+      return { ...init({ totals: state.totals, coachOn: state.coachOn }) }
 
     case 'RESET':
       return init({ coachOn: state.coachOn })
@@ -183,7 +125,9 @@ function coachPreflop(hand, action) {
   if (!hero || hand.street !== 'preflop') return null
 
   const raisedBefore = hand.players.some((p) => !p.isHero && p.committed > BB)
-  const limpers = hand.players.filter((p) => !p.isHero && !p.folded && p.committed === BB && p.position !== 'BB')
+  const limpers = hand.players.filter(
+    (p) => !p.isHero && !p.folded && p.committed === BB && p.position !== 'BB',
+  )
   if (raisedBefore || limpers.length > 0) return null
   if (hero.position === 'BB') return null
 
@@ -218,10 +162,9 @@ export function useSim() {
   const timer = useRef(null)
 
   useEffect(() => {
-    saveSlice(STORAGE_KEY, { stats: state.stats, coachOn: state.coachOn })
-  }, [state.stats, state.coachOn])
+    saveSlice(STORAGE_KEY, { totals: state.totals, coachOn: state.coachOn })
+  }, [state.totals, state.coachOn])
 
-  // Deal the first hand automatically.
   useEffect(() => {
     if (!state.hand) {
       const id = setTimeout(() => dispatch({ type: 'DEAL' }), 260)
@@ -234,19 +177,33 @@ export function useSim() {
   const legal = useMemo(() => (hand ? legalActions(hand) : null), [hand])
   const isHeroTurn = Boolean(legal?.player?.isHero)
 
-  // Bots act on a timer so the table reads like a real one instead of
-  // resolving instantly.
+  const stats = useMemo(() => deriveStats(state.totals), [state.totals])
+  const leaks = useMemo(() => detectLeaks(stats), [stats])
+  const pending = useMemo(() => pendingChecks(stats), [stats])
+
+  // What the adapting regulars know about you.
+  const reads = useMemo(
+    () => ({
+      hands: stats.hands,
+      vpip: stats.vpip,
+      foldToCbet: stats.foldToCbet,
+      aggressionFactor: stats.aggressionFactor,
+    }),
+    [stats],
+  )
+
+  // Bots act on a timer so the table reads like a real one.
   useEffect(() => {
     if (!hand || hand.street === 'complete' || isHeroTurn || !legal) return undefined
     timer.current = setTimeout(
       () => {
-        const action = botAction(hand)
+        const action = botAction(hand, Math.random, reads)
         if (action) dispatch({ type: 'ACT', action })
       },
       550 + Math.random() * 450,
     )
     return () => clearTimeout(timer.current)
-  }, [hand, isHeroTurn, legal])
+  }, [hand, isHeroTurn, legal, reads])
 
   const act = useCallback(
     (action) => {
@@ -265,19 +222,8 @@ export function useSim() {
   const resetStats = useCallback(() => dispatch({ type: 'RESET' }), [])
   const toggleCoach = useCallback(() => dispatch({ type: 'TOGGLE_COACH' }), [])
 
-  const derived = useMemo(() => {
-    const { stats } = state
-    const per = (n) => (stats.hands ? Math.round((n / stats.hands) * 100) : 0)
-    return {
-      ...stats,
-      bb: stats.netChips / BB,
-      bbPer100: stats.hands ? (stats.netChips / BB / stats.hands) * 100 : 0,
-      vpipPct: per(stats.vpip),
-      pfrPct: per(stats.pfr),
-      wtsdPct: stats.flops ? Math.round((stats.showdowns / stats.flops) * 100) : 0,
-      wsdPct: stats.showdowns ? Math.round((stats.showdownsWon / stats.showdowns) * 100) : 0,
-    }
-  }, [state])
+  // Do any regulars have enough of a sample to be adjusting to you yet?
+  const botsAdapting = stats.hands >= 25
 
   return {
     hand,
@@ -286,7 +232,11 @@ export function useSim() {
     seats: state.seats,
     buttonSeat: state.buttonSeat,
     handNumber: state.handNumber,
-    stats: derived,
+    stats,
+    leaks,
+    pending,
+    botsAdapting,
+    lastEquity: state.lastEquity,
     coachOn: state.coachOn,
     coachNote: state.lastCoachNote,
     archetypes: ARCHETYPES,

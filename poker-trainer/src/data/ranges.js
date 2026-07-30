@@ -103,6 +103,39 @@ export const CHARTS = [
     },
     note: 'You are getting 3.7:1, so you only need about 21% equity to continue — defend far wider than feels comfortable. Micro players fold the big blind far too often, which is exactly why button steals print.',
   },
+  {
+    id: '3bet-btn-vs-co',
+    group: 'Attacking',
+    label: 'BTN 3-bet',
+    context: 'BTN facing a 2.5bb CO open · 3-bet to 8bb',
+    actions: {
+      '3bet': 'TT+, AJs+, KQs, A5s-A4s, AQo+',
+      call: '22-99, A2s-ATs, K9s+, Q9s+, J9s+, T9s, 98s, 87s, 76s, AJo, KQo',
+    },
+    note: 'Value 3-bets plus a handful of suited-wheel-ace bluffs that block his premium aces and still flop well. Against a nit who folds to 3-bets constantly, widen the bluff half; against a station who never folds, drop the bluffs entirely and 3-bet value only.',
+  },
+  {
+    id: 'vs-3bet-co',
+    group: 'Defending',
+    label: 'CO vs 3-bet',
+    context: 'You opened the CO to 2.5bb and face a 3-bet to 8.5bb · 100bb',
+    actions: {
+      '3bet': 'QQ+, AKs, AKo',
+      call: '22-JJ, ATs+, KTs+, QTs+, JTs, T9s, 98s, AQo',
+    },
+    note: 'The "3-bet" colour here means 4-bet. Micro 3-betting ranges are value-heavy, so 4-bet only what wants stacks in and fold the dominated offsuit broadways — AJo and KQo are the classic money-losers in this spot.',
+  },
+  {
+    id: 'sb-vs-bb',
+    group: 'Blind battles',
+    label: 'BB vs SB',
+    context: 'SB opens to 3bb, you are in the BB · 3-bet to 11bb',
+    actions: {
+      '3bet': '77+, A8s+, KTs+, QTs+, JTs, A5s-A2s, ATo+, KQo',
+      call: '22-66, A2s-A7s, K4s+, Q6s+, J7s+, T7s+, 96s+, 85s+, 75s+, 64s+, 54s, A2o-A9o, K8o+, Q9o+, J9o+, T9o, 98o',
+    },
+    note: 'Heads up against a single opponent with position on you for the rest of the hand. Defend very wide on price, but 3-bet aggressively — the small blind is opening far too many hands and folds to 3-bets more than anyone at the table.',
+  },
 ]
 
 export const CHART_GROUPS = [...new Set(CHARTS.map((c) => c.group))]
