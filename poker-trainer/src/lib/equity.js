@@ -51,6 +51,58 @@ function without(deck, used) {
 }
 
 /**
+ * Ranges are weighted: a player who called a bet holds top pair more often than
+ * a gutshot, not equally often. A weighted range is `{ combos, cum, total }`
+ * where `cum` is the running weight total, so a combo can be drawn in a binary
+ * search rather than by rejection sampling.
+ */
+export function weightedRange(combos, weights = null) {
+  const cum = new Float64Array(combos.length)
+  let total = 0
+  for (let i = 0; i < combos.length; i += 1) {
+    total += weights ? weights[i] : 1
+    cum[i] = total
+  }
+  return { combos, cum, total }
+}
+
+/** Accepts hand codes, concrete combos, or an already-weighted range. */
+export function normaliseRange(range) {
+  if (range && range.cum instanceof Float64Array) return range
+  const combos =
+    Array.isArray(range) && Array.isArray(range[0]) ? range : expandRange(range ?? [])
+  return weightedRange(combos)
+}
+
+/** Drops combos that clash with known cards, keeping their weights aligned. */
+function excludeBlocked(range, blocked) {
+  const combos = []
+  const weights = []
+  let previous = 0
+  for (let i = 0; i < range.combos.length; i += 1) {
+    const weight = range.cum[i] - previous
+    previous = range.cum[i]
+    const combo = range.combos[i]
+    if (blocked.has(combo[0]) || blocked.has(combo[1])) continue
+    combos.push(combo)
+    weights.push(weight)
+  }
+  return weightedRange(combos, weights)
+}
+
+function sampleCombo(range, rng) {
+  const target = rng() * range.total
+  let low = 0
+  let high = range.combos.length - 1
+  while (low < high) {
+    const mid = (low + high) >> 1
+    if (range.cum[mid] < target) low = mid + 1
+    else high = mid
+  }
+  return range.combos[low]
+}
+
+/**
  * Hero equity against `opponents` random hands.
  *
  * Returns { win, tie, lose, equity } as fractions, where equity counts a split
@@ -102,9 +154,9 @@ export function equityVsRandom(hole, board = [], opponents = 1, trials = 4000, r
  * (an iterable of hand codes, or of concrete two-card combos).
  */
 export function equityVsRange(hole, board = [], range, trials = 3000, rng = Math.random) {
-  const combos = (
-    Array.isArray(range) && Array.isArray(range[0]) ? range : expandRange(range)
-  ).filter((combo) => !combo.some((c) => hole.includes(c) || board.includes(c)))
+  const blocked = new Set([...hole, ...board])
+  const weighted = excludeBlocked(normaliseRange(range), blocked)
+  const combos = weighted.combos
 
   if (combos.length === 0) return { equity: 0.5, win: 0, tie: 0, lose: 0, combos: 0 }
 
@@ -120,7 +172,7 @@ export function equityVsRange(hole, board = [], range, trials = 3000, rng = Math
   const runout = [...board, ...new Array(needed).fill(null)]
 
   for (let t = 0; t < trials; t += 1) {
-    const villain = combos[Math.floor(rng() * combos.length)]
+    const villain = sampleCombo(weighted, rng)
     const blockA = villain[0]
     const blockB = villain[1]
 
@@ -159,12 +211,9 @@ export function equityVsRanges(hole, board = [], ranges, trials = 2000, rng = Ma
   if (!ranges || ranges.length === 0) return { equity: 1, win: 1, tie: 0, lose: 0 }
   if (ranges.length === 1) return equityVsRange(hole, board, ranges[0], trials, rng)
 
-  const comboSets = ranges.map((range) =>
-    (Array.isArray(range) && Array.isArray(range[0]) ? range : expandRange(range)).filter(
-      (combo) => !combo.some((c) => hole.includes(c) || board.includes(c)),
-    ),
-  )
-  if (comboSets.some((set) => set.length === 0)) {
+  const blocked = new Set([...hole, ...board])
+  const weightedRanges = ranges.map((range) => excludeBlocked(normaliseRange(range), blocked))
+  if (weightedRanges.some((set) => set.combos.length === 0)) {
     return equityVsRandom(hole, board, ranges.length, trials, rng)
   }
 
@@ -181,8 +230,8 @@ export function equityVsRanges(hole, board = [], ranges, trials = 2000, rng = Ma
     const villains = []
     const used = new Set()
     let clash = false
-    for (const set of comboSets) {
-      const combo = set[Math.floor(rng() * set.length)]
+    for (const set of weightedRanges) {
+      const combo = sampleCombo(set, rng)
       if (used.has(combo[0]) || used.has(combo[1])) {
         clash = true
         break

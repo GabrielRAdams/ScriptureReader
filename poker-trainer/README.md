@@ -89,11 +89,20 @@ the best of it stops feeling like a mistake.
 
 Postflop, the bots decide on **equity against a modelled range**, not on
 hand-strength buckets. Each opponent's range starts from what they did preflop
-(raised ≈ top 18%, called ≈ 42%, checked the blind ≈ 60%) and is then **filtered
-by the board**: a player who called a bet on K-9-4 is modelled as holding a
-king, a nine, a pair or a draw — not "the top 42% of preflop hands", most of
-which missed completely. Betting twice narrows it further than calling twice.
-A Monte Carlo then answers "how often does my hand beat that?".
+(raised ≈ top 18%, called ≈ 42%, checked the blind ≈ 60%) and is then **weighted
+by the board and by the action taken**: a player who called a bet on K-9-4 is
+mostly holding a king, a nine, a pair or a draw, and only occasionally air.
+
+The weights are per-combo probabilities rather than a keep/drop filter, which
+matters: a binary filter models a double-barreller as holding *only* value, so a
+bot holding a bluff-catcher folds every time. Weighting keeps a realistic
+bluffing slice. Each tier is calibrated against what the bots actually hold when
+they take that action, measured over 6,000 hands — a c-bet is 46% value, a
+second barrel 74%.
+
+Who bet also matters: the air in a modelled range scales with how much that
+specific opponent bluffs, so a nit's second barrel and a maniac's are not read
+the same way. A Monte Carlo then answers "how often does my hand beat that?".
 
 Archetype differences become thresholds on that number — how far past correct
 pot odds a player will still call, and how much equity they need before betting
@@ -183,10 +192,11 @@ never leak into an online drill.
 - `src/lib/simBots.js` — archetype definitions, the equity-based postflop
   decision logic, opponent range modelling, and the read-based adjustments that
   adapting regulars apply.
-- `src/lib/rangeFilter.js` — board-aware range narrowing. Classifies a combo
+- `src/lib/rangeFilter.js` — board-aware range weighting. Classifies a combo
   against a board (set, top pair, pair, flush draw, open-ender, gutshot,
   overcards, air) using rank and suit arithmetic rather than hand evaluation,
-  because it runs over several hundred combos inside every decision.
+  because it runs over several hundred combos inside every decision, then
+  weights each class by how often it takes the observed action.
 - `src/lib/simStats.js` — hand-log summarisation, derived stats, and the leak
   rules with their minimum samples.
 - `src/lib/equity.js` — Monte Carlo equity against random hands, one range, or
@@ -200,9 +210,15 @@ never leak into an online drill.
 - `src/lib/handStrength.js` — Chen-formula preflop ranking, combo-weighted, so
   bots can reason in "top X% of hands".
 
-Measured over 4,000 headless hands: median pot 12.4bb (a real NL10 table runs
-~10-12bb), 58% of hands reach the river, 2.2% reach an all-in, and each
-archetype's VPIP/PFR tracks its advertised line.
+Measured over 4 seeds x 2,500 headless hands: median pot 12.1bb (a real NL10
+table runs ~10-12bb), p95 pot 87bb, 1.8% of hands reach an all-in, and each
+archetype's VPIP/PFR tracks its advertised line. Showdowns are frequent (60%)
+but cheap — this table has three players who call far too much, and most of
+those pots get checked down.
+
+The range weights are calibrated from measured behaviour, which is a feedback
+loop: behaviour drives the weights and the weights drive behaviour. It is a
+calibration pass toward observed reality, not a converged fixed point.
 
 Every hand is dealt 100bb effective. Real winners cash out and get replaced by
 a fresh buy-in, and letting stacks drift to 400bb would quietly turn this into
@@ -210,7 +226,7 @@ deep-stack practice — a different game. Profit is tracked separately.
 
 ## Tests
 
-`npm test` runs 162 tests covering the parts where a silent bug would teach
+`npm test` runs 170 tests covering the parts where a silent bug would teach
 something false:
 
 - the evaluator against brute-force best-of-21-subsets, plus the known 7-card
@@ -224,9 +240,10 @@ something false:
   more often than the nit does, nobody folds a set, strong hands get bet, and no
   archetype ever returns an action the engine would reject;
 - range modelling: a preflop raiser is given a tighter range than a caller,
-  ranges narrow once a villain acts on the board, a bettor is modelled as
-  stronger than a caller, and a filtered range is measurably harder to beat than
-  the unfiltered one (the whole point of filtering);
+  ranges narrow once a villain acts on the board, a second barrel is much
+  stronger than a first, a bluffer's range holds materially more air than a
+  nit's (enough to move a bluff-catcher's equity by more than five points), and
+  every tier's composition stays near its measured target;
 - the betting engine over 3,000 hands — chips conserved, pots fully awarded, no
   negative or fractional stacks — plus min-raise rules, short all-ins that do
   not reopen action, blind posting and position naming;

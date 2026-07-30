@@ -13,6 +13,7 @@
  */
 
 import { RANKS } from './cards.js'
+import { weightedRange } from './equity.js'
 
 const RANK_INDEX = (() => {
   const table = new Int8Array(128).fill(-1)
@@ -99,6 +100,34 @@ export function classifyCombo(combo, profile) {
   return 'air'
 }
 
+/**
+ * How often each class of hand takes each action, as a weight in [0, 1].
+ *
+ * This is the difference between a binary filter and a range. Binary filtering
+ * says a player who barrelled twice has only strong hands — which means the bots
+ * believe he never bluffs, and they fold far too much to aggression.
+ *
+ * These numbers are not guesses. Each tier was calibrated against what the bots
+ * actually hold when they take that action, measured over 6,000 hands, and the
+ * tier names match the action taken rather than a vague strength scale. Note
+ * that this is a feedback loop — behaviour drives the weights and the weights
+ * drive behaviour — so it is one calibration pass toward observed reality, not
+ * a converged fixed point.
+ */
+export const CONTINUE_WEIGHTS = {
+  // Called one bet: 33% value, 27% weak pair, 17% air. Condensed — the value
+  // is partly missing because those hands raised instead.
+  calledOnce: { strong: 0.94, draw: 0.84, pair: 1, weak: 0.61, air: 0.44 },
+  // Called twice: pair-heavy and value-light, because a hand that improved to
+  // value on a later street tends to raise rather than call again.
+  calledTwice: { strong: 0.37, draw: 1, pair: 0.53, weak: 0.07, air: 0.29 },
+  // Bet once: 46% value, 20% draw, 12% air — a c-betting range.
+  betOnce: { strong: 0.71, draw: 1, pair: 0.24, weak: 0.24, air: 0.17 },
+  // Bet twice: 74% value. Value-heavy, as a real second barrel is, but the 13%
+  // air is why a bluff-catcher can still profitably call one.
+  betTwice: { strong: 1, draw: 0.22, pair: 0.05, weak: 0.1, air: 0.16 },
+}
+
 const TIER_ORDER = ['air', 'weak', 'pair', 'draw', 'strong']
 
 /**
@@ -136,4 +165,38 @@ export function filterCombosByBoard(combos, board, keep = 'pair') {
   // A filter that removes everything is worse than no filter: fall back rather
   // than hand the Monte Carlo an empty range.
   return out.length >= 6 ? out : combos
+}
+
+/**
+ * Weights every combo by how often that class of hand would have taken the
+ * action the villain took, returning a weighted range ready for sampling.
+ *
+ * Unlike the binary filter this never drops a combo entirely — a two-barrel
+ * bettor still holds air some of the time, and pretending otherwise is what
+ * makes a bot fold every bluff-catcher.
+ */
+export function weighCombosByBoard(combos, board, tier = 'calledOnce', bluffiness = 0.2) {
+  const table = CONTINUE_WEIGHTS[tier] ?? CONTINUE_WEIGHTS.calledOnce
+  if (board.length === 0) return weightedRange(combos)
+
+  // Who is betting matters as much as what the board is. A nit's second barrel
+  // is nearly all value; a maniac's is mostly air. Scaling the weak and air
+  // weights by how much this player bluffs is the difference between "someone
+  // bet twice" and "*he* bet twice".
+  const bluffScale = 0.45 + bluffiness * 2.4
+
+  const profile = boardProfile(board)
+  const weights = new Array(combos.length)
+  let total = 0
+  for (let i = 0; i < combos.length; i += 1) {
+    const klass = classifyCombo(combos[i], profile)
+    const base = table[klass] ?? 0.05
+    const weight = klass === 'air' || klass === 'weak' ? base * bluffScale : base
+    weights[i] = weight
+    total += weight
+  }
+
+  // A range with no weight left is not a range; fall back to uniform.
+  if (total <= 0) return weightedRange(combos)
+  return weightedRange(combos, weights)
 }

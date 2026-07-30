@@ -6,6 +6,7 @@ import { equityVsRange, equityVsRanges } from '@/lib/equity'
 import { makeDeck, shuffle } from '@/lib/cards'
 import { startHand } from '@/lib/pokerSim'
 import { ARCHETYPES, adjustProfile, botAction, modelRange, rangesAtStreet } from '@/lib/simBots'
+import { boardProfile, classifyCombo } from '@/lib/rangeFilter'
 
 function seeded(seed = 1) {
   let s = seed
@@ -249,34 +250,62 @@ describe('opponent range modelling', () => {
     return hand
   }
 
+  /** Ranges may be plain combo arrays (preflop) or weighted objects (postflop). */
+  const comboCount = (range) => (range.combos ? range.combos.length : range.length)
+  const totalWeight = (range) => (range.total ?? range.length)
+
   it('gives the preflop raiser a tighter range than the caller', () => {
     const hand = playedHand()
-    // Compare before any board filtering by looking at a preflop-only replay.
     const [raiser, caller] = rangesAtStreet(hand, 0, 'preflop')
-    expect(raiser.length).toBeLessThan(caller.length)
+    expect(comboCount(raiser)).toBeLessThan(comboCount(caller))
   })
 
-  it('narrows a range once the villain acts on the board', () => {
-    const hand = playedHand()
-    const preflop = rangesAtStreet(hand, 0, 'preflop')
-    const flop = rangesAtStreet(hand, 0, 'flop')
-    // Both villains put money in on the flop, so both ranges must shrink.
-    expect(flop[0].length).toBeLessThan(preflop[0].length)
-    expect(flop[1].length).toBeLessThan(preflop[1].length)
-  })
-
-  it('models the bettor as stronger than the caller on the same board', () => {
+  it('down-weights a range once the villain acts on the board', () => {
     const hand = playedHand()
     const [bettor, caller] = rangesAtStreet(hand, 0, 'flop')
-    expect(bettor.length).toBeLessThan(caller.length)
+    // Weighting keeps every combo but scales it by how often that class would
+    // have taken the action, so total weight falls below the combo count.
+    expect(totalWeight(bettor)).toBeLessThan(comboCount(bettor))
+    expect(totalWeight(caller)).toBeLessThan(comboCount(caller))
   })
 
-  it('leaves a villain who has not acted postflop unfiltered', () => {
+  it('keeps a bluffing slice in a barreller\'s range', () => {
+    const hand = playedHand()
+    // Two bets from seat 1 puts it on the value tier — but never at zero air,
+    // because a bot that thinks bettors never bluff folds every bluff-catcher.
+    hand.log.push({
+      type: 'action', action: 'bet', street: 'turn', seat: 1, name: 'P1', text: 'bets 10bb',
+    })
+    hand.board = ['Kh', '9d', '4s', '2c']
+    const [bettor] = rangesAtStreet(hand, 0, 'turn')
+    expect(bettor.total).toBeGreaterThan(0)
+    // Some weight sits on hands that are not top pair or better.
+    const profile = boardProfile(hand.board)
+    let airWeight = 0
+    let previous = 0
+    for (let i = 0; i < bettor.combos.length; i += 1) {
+      const weight = bettor.cum[i] - previous
+      previous = bettor.cum[i]
+      if (classifyCombo(bettor.combos[i], profile) === 'air') airWeight += weight
+    }
+    expect(airWeight).toBeGreaterThan(0)
+  })
+
+  it('models the bettor as genuinely stronger than the caller', () => {
+    const hand = playedHand()
+    const [bettor, caller] = rangesAtStreet(hand, 0, 'flop')
+    // The test that matters is not "fewer combos" but "harder to beat".
+    const vsBettor = equityVsRange(['9c', '8c'], hand.board, bettor, 5000, seeded(41)).equity
+    const vsCaller = equityVsRange(['9c', '8c'], hand.board, caller, 5000, seeded(41)).equity
+    expect(vsBettor).toBeLessThan(vsCaller)
+  })
+
+  it('leaves a villain who has not acted postflop unweighted', () => {
     const hand = playedHand()
     hand.log = hand.log.filter((l) => l.street === 'preflop')
     const villain = hand.players.find((p) => p.seat === 2)
     const modelled = modelRange(hand, villain)
-    // No postflop information yet, so the board cannot narrow anything.
-    expect(modelled.length).toBeGreaterThan(200)
+    // No postflop information yet, so the board cannot say anything.
+    expect(comboCount(modelled)).toBeGreaterThan(200)
   })
 })

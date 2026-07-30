@@ -14,7 +14,7 @@
 
 import { BB, handCode } from './cards.js'
 import { equityVsRanges, expandRange, topPercentRange } from './equity.js'
-import { CONTINUE_TIERS, filterCombosByBoard } from './rangeFilter.js'
+import { weighCombosByBoard } from './rangeFilter.js'
 import { analyzeHand } from './handEval.js'
 import { HAND_RANKING, percentileOf } from './handStrength.js'
 import { legalActions, totalPot } from './pokerSim.js'
@@ -290,11 +290,28 @@ function continueTier(state, villain) {
   const calls = postflop.filter((l) => l.action === 'call').length
 
   // Betting twice is a much stronger statement than calling twice.
-  if (aggressive >= 2) return CONTINUE_TIERS.value
-  if (aggressive === 1) return CONTINUE_TIERS.call
-  if (calls >= 2) return CONTINUE_TIERS.call
-  if (calls === 1) return CONTINUE_TIERS.float
+  // Betting and calling produce differently shaped ranges, so they get
+  // different weight tables rather than one "how strong is he" scale.
+  if (aggressive >= 2) return 'betTwice'
+  if (aggressive === 1) return 'betOnce'
+  if (calls >= 2) return 'calledTwice'
+  if (calls === 1) return 'calledOnce'
   return null
+}
+
+/**
+ * How much this opponent bluffs, which decides how much air stays in the range
+ * we model for them.
+ *
+ * Bots know each other's tendencies the way regulars at the same table do. The
+ * hero gets the pool average instead — what the bots learn about *you* comes
+ * from tracked stats via `adjustProfile`, not from reading your hole cards.
+ */
+const POOL_AVERAGE_BLUFF = 0.2
+
+function bluffinessOf(villain) {
+  if (villain.isHero) return POOL_AVERAGE_BLUFF
+  return ARCHETYPES[villain.archetype]?.bluff ?? POOL_AVERAGE_BLUFF
 }
 
 /** The combos a villain can still hold, given position, action and board. */
@@ -302,7 +319,7 @@ export function modelRange(state, villain) {
   const combos = expandRange(topPercentRange(estimateRangePercent(state, villain), HAND_RANKING))
   const tier = continueTier(state, villain)
   if (!tier || state.board.length === 0) return combos
-  return filterCombosByBoard(combos, state.board, tier)
+  return weighCombosByBoard(combos, state.board, tier, bluffinessOf(villain))
 }
 
 /** Cached per (seat, street, board, hand) so a re-raise does not recompute. */
@@ -313,7 +330,10 @@ function estimateEquity(state, actor, trials) {
   if (opponents.length === 0) return 1
 
   const key = `${actor.seat}|${state.street}|${state.board.join('')}|${actor.hole.join('')}|${opponents
-    .map((o) => `${o.seat}:${Math.round(estimateRangePercent(state, o) * 100)}:${continueTier(state, o) ?? '-'}`)
+    .map(
+      (o) =>
+        `${o.seat}:${Math.round(estimateRangePercent(state, o) * 100)}:${continueTier(state, o) ?? '-'}`,
+    )
     .join(',')}`
   const cached = equityCache.get(key)
   if (cached !== undefined) return cached
@@ -349,10 +369,17 @@ function postflopDecision(state, legal, actor, profile, rng, trials) {
       return { type: 'raise', amount: sizeBet(legal, actor, pot, fraction) }
     }
 
-    // Bluffs and semi-bluffs: no showdown value, but fold equity or outs.
+    // Bluffs and semi-bluffs. Bluffing with equity is what real players do;
+    // firing pure air at every opportunity is what makes a bot's betting range
+    // read as 20% air, which no micro-stakes pool actually is. Hands with no
+    // draw at all mostly give up instead.
     const cbetChance = state.street === 'flop' && isPreflopAggressor ? profile.cbet : profile.barrel
     const hasDraw = analysis.draw.flush || analysis.draw.oesd
-    const bluffChance = hasDraw ? Math.max(cbetChance, profile.bluff) : profile.bluff
+    const bluffChance = hasDraw
+      ? Math.max(cbetChance, profile.bluff)
+      : analysis.draw.gutshot
+        ? profile.bluff * 0.7
+        : profile.bluff * 0.35
     if (
       legal.canRaise &&
       equity < profile.valueThreshold &&
