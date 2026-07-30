@@ -1,9 +1,10 @@
 import { useCallback, useState } from 'react'
-import { Calculator, Grid3x3, LineChart, Spade } from 'lucide-react'
+import { Calculator, Grid3x3, LineChart, Play, Spade } from 'lucide-react'
 
 import { DrillView } from '@/components/DrillView'
 import { MathDrill } from '@/components/MathDrill'
 import { ProgressView } from '@/components/ProgressView'
+import { SimTable } from '@/components/sim/SimTable'
 import { RangeTrainer } from '@/components/RangeTrainer'
 import { SessionHeader } from '@/components/SessionHeader'
 import { useTrainer, REVIEW_FILTER } from '@/hooks/useTrainer'
@@ -11,6 +12,7 @@ import { cn } from '@/lib/utils'
 
 const TABS = [
   { id: 'drill', label: 'Drill', icon: Spade },
+  { id: 'play', label: 'Play', icon: Play },
   { id: 'ranges', label: 'Ranges', icon: Grid3x3 },
   { id: 'math', label: 'Math', icon: Calculator },
   { id: 'progress', label: 'Progress', icon: LineChart },
@@ -42,6 +44,7 @@ export default function App() {
 
       <main className="mx-auto w-full max-w-3xl px-3 py-3 sm:px-4 sm:py-4">
         {tab === 'drill' ? <DrillView trainer={trainer} /> : null}
+        {tab === 'play' ? <SimTable /> : null}
         {tab === 'ranges' ? <RangeTrainer /> : null}
         {tab === 'math' ? <MathDrill /> : null}
         {tab === 'progress' ? <ProgressView trainer={trainer} onNavigate={navigate} /> : null}

@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { Calculator, Grid3x3, Spade, TriangleAlert, Trash2 } from 'lucide-react'
+import { Calculator, Grid3x3, Play, Spade, TriangleAlert, Trash2 } from 'lucide-react'
 
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -21,6 +21,15 @@ function Tile({ icon: Icon, label, value, sub, tone = 'text-foreground' }) {
   )
 }
 
+function SimStat({ label, value, tone = 'text-foreground' }) {
+  return (
+    <div className="rounded-lg border border-white/5 bg-black/20 px-2 py-1.5 text-center">
+      <div className="text-[9px] uppercase tracking-wider text-muted-foreground">{label}</div>
+      <div className={cn('tabular text-sm font-extrabold', tone)}>{value}</div>
+    </div>
+  )
+}
+
 function pct(correct, total) {
   return total ? `${Math.round((correct / total) * 100)}%` : '—'
 }
@@ -35,6 +44,7 @@ export function ProgressView({ trainer, onNavigate }) {
   const [otherStats, setOtherStats] = useState(() => ({
     ranges: loadSlice('ranges', { total: 0, correct: 0 }),
     math: loadSlice('math', { total: 0, correct: 0, bestStreak: 0 }),
+    sim: loadSlice('sim', null)?.stats ?? null,
   }))
 
   // Refresh from storage whenever this view mounts — the quiz components own
@@ -43,9 +53,12 @@ export function ProgressView({ trainer, onNavigate }) {
     setOtherStats({
       ranges: loadSlice('ranges', { total: 0, correct: 0 }),
       math: loadSlice('math', { total: 0, correct: 0, bestStreak: 0 }),
+      sim: loadSlice('sim', null)?.stats ?? null,
     })
   }, [])
 
+  const sim = otherStats.sim
+  const simBB = sim ? sim.netChips / 100 : 0
   const other = FORMATS[format === 'online' ? 'live' : 'online']
   const otherFormatHands = history.filter((h) => h.format === other.id).length
 
@@ -86,6 +99,39 @@ export function ProgressView({ trainer, onNavigate }) {
           sub={`${otherStats.math.total} questions · best streak ${otherStats.math.bestStreak ?? 0}`}
         />
       </div>
+
+      {sim && sim.hands > 0 ? (
+        <Card>
+          <CardContent className="space-y-2 p-4 sm:p-5">
+            <h3 className="flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-[0.18em] text-muted-foreground">
+              <Play className="h-3.5 w-3.5 text-felt-300" aria-hidden="true" />
+              Sim table
+            </h3>
+            <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+              <SimStat label="Hands" value={sim.hands} />
+              <SimStat
+                label="Net"
+                value={`${simBB >= 0 ? '+' : ''}${simBB.toFixed(1)}bb`}
+                tone={simBB > 0 ? 'text-emerald-300' : simBB < 0 ? 'text-rose-300' : 'text-foreground'}
+              />
+              <SimStat
+                label="bb/100"
+                value={sim.hands >= 50 ? ((simBB / sim.hands) * 100).toFixed(0) : '—'}
+                tone={simBB > 0 ? 'text-emerald-300' : 'text-rose-300'}
+              />
+              <SimStat
+                label="VPIP/PFR"
+                value={`${Math.round((sim.vpip / sim.hands) * 100)}/${Math.round((sim.pfr / sim.hands) * 100)}`}
+              />
+            </div>
+            <p className="text-[10px] leading-relaxed text-muted-foreground">
+              A winrate needs thousands of hands before it means anything — below a few hundred this
+              is variance, not skill. VPIP/PFR stabilise much faster: a solid 6-max reg runs near
+              22/18.
+            </p>
+          </CardContent>
+        </Card>
+      ) : null}
 
       {stats.total === 0 ? (
         <Card>
