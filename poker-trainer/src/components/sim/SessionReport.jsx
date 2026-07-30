@@ -118,10 +118,10 @@ export function SessionReport({ stats, leaks, pending }) {
   )
 }
 
-export function AdaptingBadge({ active }) {
+export function AdaptingBadge({ active, after = 25 }) {
   return (
     <Badge variant={active ? 'amber' : 'slate'}>
-      {active ? 'Regs are adapting to you' : 'Regs adapt after 25 hands'}
+      {active ? 'Regs are adapting to you' : `Regs adapt after ${after} hands`}
     </Badge>
   )
 }

@@ -5,7 +5,15 @@ import { evaluate, compareScores, scoreOf } from '@/lib/handEval'
 import { equityVsRange, equityVsRanges } from '@/lib/equity'
 import { makeDeck, shuffle } from '@/lib/cards'
 import { startHand } from '@/lib/pokerSim'
-import { ARCHETYPES, adjustProfile, botAction, modelRange, rangesAtStreet } from '@/lib/simBots'
+import {
+  ARCHETYPES,
+  DIFFICULTIES,
+  DIFFICULTY_IDS,
+  adjustProfile,
+  botAction,
+  modelRange,
+  rangesAtStreet,
+} from '@/lib/simBots'
 import { boardProfile, classifyCombo } from '@/lib/rangeFilter'
 
 function seeded(seed = 1) {
@@ -307,5 +315,60 @@ describe('opponent range modelling', () => {
     const modelled = modelRange(hand, villain)
     // No postflop information yet, so the board cannot say anything.
     expect(comboCount(modelled)).toBeGreaterThan(200)
+  })
+})
+
+describe('table difficulty', () => {
+  it('defines a full table for every level', () => {
+    for (const id of DIFFICULTY_IDS) {
+      const level = DIFFICULTIES[id]
+      expect(level.table, id).toHaveLength(5)
+      for (const archetype of level.table) {
+        expect(ARCHETYPES[archetype], `${id} seats an unknown archetype`).toBeDefined()
+      }
+      expect(level.trials).toBeGreaterThan(0)
+      expect(level.adaptAfter).toBeGreaterThan(0)
+    }
+  })
+
+  it('removes the donators as difficulty rises', () => {
+    // This is what actually makes a table hard. A table of good players plus
+    // one maniac is *easier* than a table of merely solid ones, because the
+    // maniac's losses are shared out — so the harder levels drop the fish
+    // rather than upgrading the opponents.
+    const fish = ['station', 'whale', 'maniac']
+    const fishCount = (id) => DIFFICULTIES[id].table.filter((a) => fish.includes(a)).length
+    expect(fishCount('soft')).toBeGreaterThan(fishCount('standard'))
+    expect(fishCount('standard')).toBeGreaterThan(fishCount('tough'))
+    expect(fishCount('tough')).toBe(0)
+  })
+
+  it('makes regulars adjust sooner and decide more precisely', () => {
+    expect(DIFFICULTIES.tough.adaptAfter).toBeLessThan(DIFFICULTIES.soft.adaptAfter)
+    expect(DIFFICULTIES.tough.trials).toBeGreaterThan(DIFFICULTIES.soft.trials)
+  })
+
+  it('honours the adaptAfter threshold it was given', () => {
+    const reads = { hands: 15, vpip: 40, foldToCbet: 75, aggressionFactor: 0.4 }
+    // 15 hands is not enough at the soft table but is at the tough one.
+    expect(adjustProfile(ARCHETYPES.tag, reads, true, DIFFICULTIES.soft.adaptAfter)).toBe(
+      ARCHETYPES.tag,
+    )
+    expect(adjustProfile(ARCHETYPES.tag, reads, true, DIFFICULTIES.tough.adaptAfter)).not.toBe(
+      ARCHETYPES.tag,
+    )
+  })
+
+  it('gives the shark the tightest calling standard of any archetype', () => {
+    // A shark calls at the pot odds and no looser; everyone else leaks in one
+    // direction or the other.
+    for (const id of ['station', 'whale', 'maniac']) {
+      expect(ARCHETYPES[id].callSlack).toBeGreaterThan(ARCHETYPES.shark.callSlack)
+    }
+    // It also value bets thinner than anyone, which is where regs make money.
+    for (const id of Object.keys(ARCHETYPES)) {
+      if (id === 'shark') continue
+      expect(ARCHETYPES.shark.valueThreshold).toBeLessThanOrEqual(ARCHETYPES[id].valueThreshold)
+    }
   })
 })

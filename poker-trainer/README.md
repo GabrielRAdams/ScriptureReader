@@ -192,6 +192,8 @@ never leak into an online drill.
 - `src/lib/simBots.js` — archetype definitions, the equity-based postflop
   decision logic, opponent range modelling, and the read-based adjustments that
   adapting regulars apply.
+- `src/lib/tempo.js` — how long an opponent takes to act, from the action taken,
+  the street, how much of the stack is at risk, and who is deciding.
 - `src/lib/rangeFilter.js` — board-aware range weighting. Classifies a combo
   against a board (set, top pair, pair, flush draw, open-ender, gutshot,
   overcards, air) using rank and suit arithmetic rather than hand evaluation,
@@ -226,7 +228,7 @@ deep-stack practice — a different game. Profit is tracked separately.
 
 ## Tests
 
-`npm test` runs 170 tests covering the parts where a silent bug would teach
+`npm test` runs 186 tests covering the parts where a silent bug would teach
 something false:
 
 - the evaluator against brute-force best-of-21-subsets, plus the known 7-card
@@ -239,6 +241,14 @@ something false:
 - bot behaviour: a nit folds air to a big bet, a station calls a bluff-catcher
   more often than the nit does, nobody folds a set, strong hands get bet, and no
   archetype ever returns an action the engine would reject;
+- difficulty: every level seats a full valid table, donators are removed as it
+  rises (and Tough has none), harder tables adapt sooner and decide more
+  precisely, and the shark has the tightest calling standard of any archetype;
+- decision timing: bounded and finite for every action and street, trivial
+  decisions resolve faster than real ones, later streets and bigger commitments
+  take longer, regulars are faster than recreational players, tanks are rare,
+  the delay cannot see the cards, and speeding the table up preserves the shape
+  of the curve;
 - range modelling: a preflop raiser is given a tighter range than a caller,
   ranges narrow once a villain acts on the board, a second barrel is much
   stronger than a first, a bluffer's range holds materially more air than a

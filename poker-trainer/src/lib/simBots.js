@@ -119,6 +119,31 @@ export const ARCHETYPES = {
     minCallEquity: 0.16,
     valueThreshold: 0.58,
   },
+  shark: {
+    id: 'shark',
+    name: 'Shark',
+    hud: '24/20',
+    blurb: 'Balanced winning regular. Value bets thin, bluffs at the right rate, and pays attention to you.',
+    tone: 'border-cyan-500/40 bg-cyan-500/15 text-cyan-200',
+    open: { UTG: 0.16, HJ: 0.2, CO: 0.29, BTN: 0.48, SB: 0.4, BB: 0.32 },
+    limp: 0,
+    callOpen: 0.14,
+    threeBet: 0.11,
+    callThreeBet: 0.1,
+    fourBet: 0.04,
+    cbet: 0.62,
+    barrel: 0.55,
+    bluff: 0.3,
+    callDown: 'medium',
+    raiseValue: 0.78,
+    foldToAggression: 0.6,
+    adapts: true,
+    // Calls almost exactly at the pot odds, value bets thinner than anyone
+    // else, and does not spew: the closest thing here to a solid player.
+    callSlack: 0,
+    minCallEquity: 0.19,
+    valueThreshold: 0.58,
+  },
   whale: {
     id: 'whale',
     name: 'Whale',
@@ -143,8 +168,52 @@ export const ARCHETYPES = {
   },
 }
 
+/**
+ * Table difficulty. Three levers, all of which matter at a real table: who is
+ * sitting there, how quickly the regulars start adjusting to you, and how
+ * precisely they estimate equity — a soft player misreads a spot by a few
+ * points, and those few points are what you profit from.
+ *
+ * Composition is the biggest lever, and not in the obvious way. A table of
+ * skilled players plus one maniac is *easier* than a table of merely solid
+ * players, because the maniac's losses get shared out. Difficulty is really a
+ * question of how much money is available, so the harder tables remove the
+ * donators rather than upgrading the opponents.
+ */
+export const DIFFICULTIES = {
+  soft: {
+    id: 'soft',
+    name: 'Soft',
+    stakes: 'NL2 – NL10',
+    blurb: 'Two regulars and three recreational players. The games you should be beating.',
+    table: ['tag', 'station', 'nit', 'whale', 'maniac'],
+    adaptAfter: 25,
+    trials: 150,
+  },
+  standard: {
+    id: 'standard',
+    name: 'Standard',
+    stakes: 'NL25',
+    blurb: 'Three regulars and two recreational players. Half the free money is gone.',
+    table: ['tag', 'shark', 'nit', 'station', 'whale'],
+    adaptAfter: 18,
+    trials: 300,
+  },
+  tough: {
+    id: 'tough',
+    name: 'Tough',
+    stakes: 'NL50+',
+    blurb: 'Five regulars, no donator. Nobody at this table is handing out money.',
+    table: ['shark', 'shark', 'shark', 'tag', 'nit'],
+    adaptAfter: 10,
+    trials: 700,
+  },
+}
+
+export const DIFFICULTY_IDS = Object.keys(DIFFICULTIES)
+
 /** A believable NL10 table: two regs and three recreational players. */
-export const DEFAULT_TABLE = ['tag', 'station', 'nit', 'whale', 'maniac']
+export const DEFAULT_TABLE = DIFFICULTIES.soft.table
 
 export const BOT_NAMES = {
   nit: ['RockGarden', 'FoldMaster', 'TightIsRight', 'Granite'],
@@ -152,6 +221,7 @@ export const BOT_NAMES = {
   station: ['CallMeMaybe', 'NeverFolds', 'SheriffJoe', 'PayItAll'],
   maniac: ['ShipItFish', 'RiverRat', 'AllInAndy', 'TiltCity'],
   whale: ['LuckyLimper', 'ChaseTheDream', 'SplashyPants', 'JustHere4Fun'],
+  shark: ['QuietCrusher', 'RangeMerchant', 'ColdDecked', 'ThinValue'],
 }
 
 /**
@@ -162,8 +232,8 @@ export const BOT_NAMES = {
  * `reads` comes from the hero's own tracked stats, so the bots are exploiting
  * exactly the numbers the leak report shows you.
  */
-export function adjustProfile(profile, reads, heroIsOpponent) {
-  if (!profile.adapts || !reads || !heroIsOpponent || reads.hands < 25) return profile
+export function adjustProfile(profile, reads, heroIsOpponent, adaptAfter = 25) {
+  if (!profile.adapts || !reads || !heroIsOpponent || reads.hands < adaptAfter) return profile
   const adjusted = { ...profile }
 
   // You fold to c-bets too much: he bets more, and more often as a bluff.
@@ -458,7 +528,7 @@ export function botAction(state, rng = Math.random, reads = null, options = {}) 
   const actor = legal.player
   const base = ARCHETYPES[actor.archetype] ?? ARCHETYPES.tag
   const heroLive = state.players.some((p) => p.isHero && !p.folded)
-  const profile = adjustProfile(base, reads, heroLive)
+  const profile = adjustProfile(base, reads, heroLive, options.adaptAfter ?? 25)
 
   const decision =
     state.street === 'preflop'

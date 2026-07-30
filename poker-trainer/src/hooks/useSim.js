@@ -5,16 +5,17 @@ import { CHARTS } from '@/data/ranges'
 import { buildChart } from '@/lib/range'
 import { equityVsRanges } from '@/lib/equity'
 import { applyAction, legalActions, startHand } from '@/lib/pokerSim'
-import { ARCHETYPES, BOT_NAMES, DEFAULT_TABLE, botAction, rangesAtStreet } from '@/lib/simBots'
+import { ARCHETYPES, BOT_NAMES, DIFFICULTIES, botAction, rangesAtStreet } from '@/lib/simBots'
+import { SPEEDS, delayForAction } from '@/lib/tempo'
 import { EMPTY_TOTALS, addTotals, deriveStats, detectLeaks, pendingChecks, summariseHand } from '@/lib/simStats'
 import { loadSlice, saveSlice } from '@/lib/storage'
 
 const STORAGE_KEY = 'sim'
 const BUY_IN = 100 * BB
 
-function buildSeats(rng = Math.random) {
+function buildSeats(difficulty = 'soft', rng = Math.random) {
   const used = new Set()
-  const bots = DEFAULT_TABLE.map((archetype, i) => {
+  const bots = (DIFFICULTIES[difficulty] ?? DIFFICULTIES.soft).table.map((archetype, i) => {
     const pool = BOT_NAMES[archetype]
     let name = pool[Math.floor(rng() * pool.length)]
     while (used.has(name)) name = pool[(pool.indexOf(name) + 1) % pool.length]
@@ -31,8 +32,11 @@ const RFI_BY_POSITION = Object.fromEntries(
 )
 
 function init(persisted) {
+  const difficulty = persisted?.difficulty ?? 'soft'
   return {
-    seats: buildSeats(),
+    difficulty,
+    speed: persisted?.speed ?? 'realistic',
+    seats: buildSeats(difficulty),
     buttonSeat: 1,
     handNumber: 1,
     hand: null,
@@ -108,11 +112,31 @@ function reducer(state, action) {
     case 'TOGGLE_COACH':
       return { ...state, coachOn: !state.coachOn }
 
+    case 'SET_SPEED':
+      return { ...state, speed: action.speed }
+
     case 'NEW_TABLE':
-      return { ...init({ totals: state.totals, coachOn: state.coachOn }) }
+      return init({
+        totals: state.totals,
+        coachOn: state.coachOn,
+        difficulty: state.difficulty,
+        speed: state.speed,
+      })
+
+    case 'SET_DIFFICULTY': {
+      if (action.difficulty === state.difficulty) return state
+      // A different table means different opponents, so the hand in progress
+      // ends here. Lifetime stats carry over.
+      return init({
+        totals: state.totals,
+        coachOn: state.coachOn,
+        difficulty: action.difficulty,
+        speed: state.speed,
+      })
+    }
 
     case 'RESET':
-      return init({ coachOn: state.coachOn })
+      return init({ coachOn: state.coachOn, difficulty: state.difficulty, speed: state.speed })
 
     default:
       return state
@@ -165,8 +189,13 @@ export function useSim() {
   const timer = useRef(null)
 
   useEffect(() => {
-    saveSlice(STORAGE_KEY, { totals: state.totals, coachOn: state.coachOn })
-  }, [state.totals, state.coachOn])
+    saveSlice(STORAGE_KEY, {
+      totals: state.totals,
+      coachOn: state.coachOn,
+      difficulty: state.difficulty,
+      speed: state.speed,
+    })
+  }, [state.totals, state.coachOn, state.difficulty, state.speed])
 
   useEffect(() => {
     if (!state.hand) {
@@ -195,18 +224,24 @@ export function useSim() {
     [stats],
   )
 
-  // Bots act on a timer so the table reads like a real one.
+  // Bots decide immediately but act on a human-looking delay: the decision has
+  // to exist first, because how long somebody takes depends on what they are
+  // doing. A snap fold and a river raise should not take the same time.
   useEffect(() => {
     if (!hand || hand.street === 'complete' || isHeroTurn || !legal) return undefined
+    const settings = DIFFICULTIES[state.difficulty] ?? DIFFICULTIES.soft
+    const action = botAction(hand, Math.random, reads, {
+      trials: settings.trials,
+      adaptAfter: settings.adaptAfter,
+    })
+    if (!action) return undefined
+
     timer.current = setTimeout(
-      () => {
-        const action = botAction(hand, Math.random, reads)
-        if (action) dispatch({ type: 'ACT', action })
-      },
-      550 + Math.random() * 450,
+      () => dispatch({ type: 'ACT', action }),
+      delayForAction(hand, legal, action, state.speed),
     )
     return () => clearTimeout(timer.current)
-  }, [hand, isHeroTurn, legal, reads])
+  }, [hand, isHeroTurn, legal, reads, state.difficulty, state.speed])
 
   const act = useCallback(
     (action) => {
@@ -220,13 +255,19 @@ export function useSim() {
     [hand, isHeroTurn, state.coachOn],
   )
 
+  const setSpeed = useCallback((speed) => dispatch({ type: 'SET_SPEED', speed }), [])
+  const setDifficulty = useCallback(
+    (difficulty) => dispatch({ type: 'SET_DIFFICULTY', difficulty }),
+    [],
+  )
   const nextHand = useCallback(() => dispatch({ type: 'NEXT_HAND' }), [])
   const newTable = useCallback(() => dispatch({ type: 'NEW_TABLE' }), [])
   const resetStats = useCallback(() => dispatch({ type: 'RESET' }), [])
   const toggleCoach = useCallback(() => dispatch({ type: 'TOGGLE_COACH' }), [])
 
   // Do any regulars have enough of a sample to be adjusting to you yet?
-  const botsAdapting = stats.hands >= 25
+  const settings = DIFFICULTIES[state.difficulty] ?? DIFFICULTIES.soft
+  const botsAdapting = stats.hands >= settings.adaptAfter
 
   return {
     hand,
@@ -243,6 +284,12 @@ export function useSim() {
     coachOn: state.coachOn,
     coachNote: state.lastCoachNote,
     archetypes: ARCHETYPES,
+    difficulty: state.difficulty,
+    difficultySettings: settings,
+    setDifficulty,
+    speed: state.speed,
+    speedSettings: SPEEDS[state.speed] ?? SPEEDS.realistic,
+    setSpeed,
     act,
     nextHand,
     newTable,

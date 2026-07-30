@@ -7,6 +7,7 @@ import {
   GraduationCap,
   RefreshCw,
   ScrollText,
+  Timer,
   Trash2,
   TriangleAlert,
 } from 'lucide-react'
@@ -19,6 +20,8 @@ import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
 import { useSim } from '@/hooks/useSim'
+import { DIFFICULTIES, DIFFICULTY_IDS } from '@/lib/simBots'
+import { SPEEDS, SPEED_IDS } from '@/lib/tempo'
 import { toBB } from '@/lib/cards'
 import { totalPot } from '@/lib/pokerSim'
 import { cn } from '@/lib/utils'
@@ -40,6 +43,7 @@ function HudStat({ label, value, tone = 'text-foreground', title }) {
 export function SimTable() {
   const sim = useSim()
   const { hand, legal, isHeroTurn, stats, leaks, pending, coachNote, coachOn, lastEquity } = sim
+  const difficulty = DIFFICULTIES[sim.difficulty] ?? DIFFICULTIES.soft
   const [logOpen, setLogOpen] = useState(false)
   const [reportOpen, setReportOpen] = useState(false)
 
@@ -91,6 +95,37 @@ export function SimTable() {
 
   return (
     <div className="space-y-3">
+      {/* Table difficulty. Harder tables are not "better bots" so much as fewer
+          donators — that is what actually decides how much money is available. */}
+      <div className="space-y-1.5">
+        <div className="grid grid-cols-3 gap-1 rounded-xl bg-muted/60 p-1">
+          {DIFFICULTY_IDS.map((id) => {
+            const level = DIFFICULTIES[id]
+            const active = sim.difficulty === id
+            return (
+              <button
+                key={id}
+                type="button"
+                onClick={() => sim.setDifficulty(id)}
+                aria-pressed={active}
+                className={cn(
+                  'flex flex-col items-center rounded-lg px-2 py-1.5 transition-all active:scale-[0.98]',
+                  active
+                    ? 'bg-felt-600 text-white shadow-md shadow-felt-900/50'
+                    : 'text-muted-foreground hover:text-foreground',
+                )}
+              >
+                <span className="text-xs font-bold">{level.name}</span>
+                <span className={cn('text-[9px]', active ? 'text-felt-100/80' : 'opacity-70')}>
+                  {level.stakes}
+                </span>
+              </button>
+            )
+          })}
+        </div>
+        <p className="px-0.5 text-[10px] leading-snug text-muted-foreground">{difficulty.blurb}</p>
+      </div>
+
       {/* Session HUD — your own stats, the way a tracker would show them. */}
       <div className="flex gap-1.5">
         <HudStat label="Hands" value={stats.hands} />
@@ -353,8 +388,36 @@ export function SimTable() {
         ) : null}
       </div>
 
+      {/* Opponents act on human-shaped delays; this scales that without
+          flattening it, so the rhythm stays recognisable when grinding. */}
+      <div className="flex items-center gap-2">
+        <span className="flex items-center gap-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+          <Timer className="h-3.5 w-3.5" aria-hidden="true" />
+          Speed
+        </span>
+        <div className="flex flex-1 gap-1 rounded-lg bg-muted/60 p-1">
+          {SPEED_IDS.map((id) => (
+            <button
+              key={id}
+              type="button"
+              onClick={() => sim.setSpeed(id)}
+              aria-pressed={sim.speed === id}
+              title={SPEEDS[id].blurb}
+              className={cn(
+                'flex-1 rounded-md px-2 py-1 text-[11px] font-semibold transition-all active:scale-95',
+                sim.speed === id
+                  ? 'bg-primary text-primary-foreground'
+                  : 'text-muted-foreground hover:text-foreground',
+              )}
+            >
+              {SPEEDS[id].name}
+            </button>
+          ))}
+        </div>
+      </div>
+
       <div className="flex flex-wrap items-center gap-2">
-        <AdaptingBadge active={sim.botsAdapting} />
+        <AdaptingBadge active={sim.botsAdapting} after={difficulty.adaptAfter} />
         <Badge variant={coachOn ? 'felt' : 'slate'}>
           <button type="button" onClick={sim.toggleCoach} className="flex items-center gap-1">
             <GraduationCap className="h-3 w-3" aria-hidden="true" />
@@ -379,8 +442,9 @@ export function SimTable() {
       </div>
 
       <p className="text-center text-[10px] leading-relaxed text-muted-foreground">
-        Opponents are rule-based caricatures of NL2-NL25 player types, not solvers. Beating them is
-        practice at exploiting the pool, not proof of a winning strategy.
+        Opponents are rule-based player types, not solvers, and they act on human-shaped delays
+        that never depend on their cards. Beating them is practice at exploiting a pool, not proof
+        of a winning strategy.
       </p>
     </div>
   )
