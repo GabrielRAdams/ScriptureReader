@@ -54,6 +54,10 @@ export default {
           900: '#072617',
         },
       },
+      gridTemplateColumns: {
+        // 13x13 preflop hand grid
+        13: 'repeat(13, minmax(0, 1fr))',
+      },
       borderRadius: {
         lg: 'var(--radius)',
         md: 'calc(var(--radius) - 2px)',

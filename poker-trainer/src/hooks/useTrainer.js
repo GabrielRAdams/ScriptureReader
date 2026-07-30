@@ -1,10 +1,13 @@
-import { useCallback, useMemo, useReducer } from 'react'
+import { useCallback, useEffect, useMemo, useReducer } from 'react'
 
-import { CATEGORIES, CATEGORY_IDS, LEAKS } from '@/data/categories'
-import { SCENARIOS, SCENARIOS_BY_CATEGORY } from '@/data/scenarios'
+import { CATEGORIES, LEAKS, categoryIdsFor } from '@/data/categories'
+import { SCENARIOS, scenariosForFormat } from '@/data/scenarios'
 import { RATING_SCORE } from '@/lib/ratings'
+import { loadSlice, saveSlice } from '@/lib/storage'
 
 const ALL = 'ALL'
+const REVIEW = 'REVIEW'
+const STORAGE_KEY = 'drill'
 
 function shuffle(items) {
   const copy = [...items]
@@ -15,31 +18,58 @@ function shuffle(items) {
   return copy
 }
 
-function poolFor(filter) {
-  return filter === ALL ? SCENARIOS : (SCENARIOS_BY_CATEGORY[filter] ?? [])
+/** Scenario ids the user has ever blundered and not since answered optimally. */
+function missedIds(history) {
+  const outcome = new Map()
+  for (const row of history) outcome.set(row.scenarioId, row.rating)
+  return new Set(
+    [...outcome.entries()].filter(([, rating]) => rating === 'blunder').map(([id]) => id),
+  )
+}
+
+function poolFor(format, filter, history) {
+  const inFormat = scenariosForFormat(format)
+  if (filter === REVIEW) {
+    const missed = missedIds(history)
+    return inFormat.filter((s) => missed.has(s.id))
+  }
+  if (filter === ALL) return inFormat
+  return inFormat.filter((s) => s.category === filter)
 }
 
 /**
- * A shuffled queue of scenario ids. queue[0] is the live scenario; when it runs
- * dry we reshuffle so the user never sees the same hand twice in a cycle, and
- * never sees the same hand twice in a row across cycles.
+ * A shuffled queue of scenario ids. queue[0] is the live scenario.
+ *
+ * Hands the user has previously blundered are floated to the front of each
+ * fresh cycle — a cheap spaced-repetition pass that puts the leaks back in
+ * front of you sooner without ever repeating a hand inside one cycle.
  */
-function buildQueue(filter, avoidId) {
-  const queue = shuffle(poolFor(filter).map((s) => s.id))
+function buildQueue(format, filter, history, avoidId) {
+  const pool = poolFor(format, filter, history)
+  if (pool.length === 0) return []
+
+  const missed = missedIds(history)
+  const ids = shuffle(pool.map((s) => s.id))
+  const queue =
+    filter === REVIEW ? ids : [...ids.filter((id) => missed.has(id)), ...ids.filter((id) => !missed.has(id))]
+
   if (queue.length > 1 && queue[0] === avoidId) {
     ;[queue[0], queue[1]] = [queue[1], queue[0]]
   }
   return queue
 }
 
-function init(filter = ALL) {
+function init(persisted) {
+  const format = persisted?.format ?? 'online'
+  const history = persisted?.history ?? []
   return {
-    filter,
-    queue: buildQueue(filter),
+    format,
+    filter: ALL,
+    queue: buildQueue(format, ALL, history),
     chosenId: null,
-    history: [],
+    history,
     streak: 0,
-    bestStreak: 0,
+    bestStreak: persisted?.bestStreak ?? 0,
   }
 }
 
@@ -64,6 +94,7 @@ function reducer(state, action) {
           ...state.history,
           {
             scenarioId: scenario.id,
+            format: scenario.format,
             category: scenario.category,
             actionId: choice.id,
             actionLabel: choice.label,
@@ -79,7 +110,10 @@ function reducer(state, action) {
       return {
         ...state,
         chosenId: null,
-        queue: rest.length > 0 ? rest : buildQueue(state.filter, state.queue[0]),
+        queue:
+          rest.length > 0
+            ? rest
+            : buildQueue(state.format, state.filter, state.history, state.queue[0]),
       }
     }
 
@@ -89,41 +123,53 @@ function reducer(state, action) {
         ...state,
         filter: action.filter,
         chosenId: null,
-        queue: buildQueue(action.filter, state.queue[0]),
+        queue: buildQueue(state.format, action.filter, state.history, state.queue[0]),
+      }
+    }
+
+    case 'SET_FORMAT': {
+      if (action.format === state.format) return state
+      return {
+        ...state,
+        format: action.format,
+        filter: ALL,
+        chosenId: null,
+        queue: buildQueue(action.format, ALL, state.history, state.queue[0]),
       }
     }
 
     case 'RESET':
-      return init(state.filter)
+      return init({ format: state.format })
 
     default:
       return state
   }
 }
 
-/** Turns the raw answer log into the numbers the header and drawer render. */
-function computeStats(history) {
-  const total = history.length
-  const score = history.reduce((sum, h) => sum + RATING_SCORE[h.rating], 0)
-  const counts = history.reduce(
-    (acc, h) => ({ ...acc, [h.rating]: acc[h.rating] + 1 }),
-    { optimal: 0, acceptable: 0, blunder: 0 },
-  )
+/** Turns the raw answer log into the numbers the header and progress view render. */
+function computeStats(history, format) {
+  const rows = history.filter((h) => h.format === format)
+  const total = rows.length
+  const score = rows.reduce((sum, h) => sum + RATING_SCORE[h.rating], 0)
+  const counts = rows.reduce((acc, h) => ({ ...acc, [h.rating]: acc[h.rating] + 1 }), {
+    optimal: 0,
+    acceptable: 0,
+    blunder: 0,
+  })
 
-  const byCategory = CATEGORY_IDS.map((id) => {
-    const rows = history.filter((h) => h.category === id)
-    const catScore = rows.reduce((sum, h) => sum + RATING_SCORE[h.rating], 0)
+  const byCategory = categoryIdsFor(format).map((id) => {
+    const catRows = rows.filter((h) => h.category === id)
+    const catScore = catRows.reduce((sum, h) => sum + RATING_SCORE[h.rating], 0)
     return {
       id,
       ...CATEGORIES[id],
-      attempts: rows.length,
-      blunders: rows.filter((h) => h.rating === 'blunder').length,
-      accuracy: rows.length ? Math.round((catScore / rows.length) * 100) : null,
+      attempts: catRows.length,
+      blunders: catRows.filter((h) => h.rating === 'blunder').length,
+      accuracy: catRows.length ? Math.round((catScore / catRows.length) * 100) : null,
     }
   })
 
-  // Leaks need at least two occurrences before we call them a pattern.
-  const leakCounts = history.reduce((acc, h) => {
+  const leakCounts = rows.reduce((acc, h) => {
     if (!h.leak) return acc
     acc[h.leak] = (acc[h.leak] ?? 0) + 1
     return acc
@@ -146,6 +192,7 @@ function computeStats(history) {
 
   return {
     total,
+    lifetime: history.length,
     accuracy: total ? Math.round((score / total) * 100) : 0,
     counts,
     byCategory,
@@ -156,40 +203,60 @@ function computeStats(history) {
 }
 
 export function useTrainer() {
-  const [state, dispatch] = useReducer(reducer, ALL, init)
+  const [state, dispatch] = useReducer(reducer, null, () => init(loadSlice(STORAGE_KEY, null)))
+
+  useEffect(() => {
+    saveSlice(STORAGE_KEY, {
+      format: state.format,
+      history: state.history,
+      bestStreak: state.bestStreak,
+    })
+  }, [state.format, state.history, state.bestStreak])
 
   const scenario = useMemo(
-    () => SCENARIOS.find((s) => s.id === state.queue[0]) ?? SCENARIOS[0],
+    () => SCENARIOS.find((s) => s.id === state.queue[0]) ?? null,
     [state.queue],
   )
 
   const chosenAction = useMemo(
-    () => (state.chosenId ? scenario.actions.find((a) => a.id === state.chosenId) : null),
+    () => (state.chosenId && scenario ? scenario.actions.find((a) => a.id === state.chosenId) : null),
     [scenario, state.chosenId],
   )
 
-  const stats = useMemo(() => computeStats(state.history), [state.history])
+  const stats = useMemo(() => computeStats(state.history, state.format), [state.history, state.format])
 
-  const answer = useCallback((choice) => dispatch({ type: 'ANSWER', scenario, choice }), [scenario])
+  const missedCount = useMemo(() => {
+    const missed = missedIds(state.history)
+    return scenariosForFormat(state.format).filter((s) => missed.has(s.id)).length
+  }, [state.history, state.format])
+
+  const answer = useCallback(
+    (choice) => dispatch({ type: 'ANSWER', scenario, choice }),
+    [scenario],
+  )
   const next = useCallback(() => dispatch({ type: 'NEXT' }), [])
   const setFilter = useCallback((filter) => dispatch({ type: 'SET_FILTER', filter }), [])
+  const setFormat = useCallback((format) => dispatch({ type: 'SET_FORMAT', format }), [])
   const reset = useCallback(() => dispatch({ type: 'RESET' }), [])
 
   return {
     scenario,
     chosenAction,
+    format: state.format,
     filter: state.filter,
     streak: state.streak,
     bestStreak: state.bestStreak,
     history: state.history,
-    poolSize: poolFor(state.filter).length,
+    poolSize: poolFor(state.format, state.filter, state.history).length,
     remaining: state.queue.length,
+    missedCount,
     stats,
     answer,
     next,
     setFilter,
+    setFormat,
     reset,
   }
 }
 
-export { ALL as ALL_CATEGORIES }
+export { ALL as ALL_CATEGORIES, REVIEW as REVIEW_FILTER }

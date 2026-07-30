@@ -23,10 +23,10 @@ export function ScenarioHeader({ scenario }) {
         <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
           <HeaderCell label="Hero position" value={scenario.heroPos} icon={MapPin} highlight />
           <HeaderCell label="Effective stack" value={`${scenario.stackBB} BB`} />
-          <HeaderCell label="Pot" value={scenario.potUSD} />
+          <HeaderCell label="Pot" value={scenario.pot} />
           <HeaderCell
             label="To call"
-            value={scenario.toCallUSD === '$0' ? '—' : scenario.toCallUSD}
+            value={scenario.toCall ?? '—'}
           />
         </div>
 

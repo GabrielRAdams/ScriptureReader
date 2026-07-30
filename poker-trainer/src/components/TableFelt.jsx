@@ -20,7 +20,7 @@ function Stat({ icon: Icon, label, value }) {
  * player-count read-outs around the edge.
  */
 export function TableFelt({ scenario }) {
-  const { board, heroHand, street, potUSD, players, stackBB } = scenario
+  const { board, heroHand, street, pot, players, stackBB } = scenario
   const emptySlots = Math.max(0, (board.length === 0 ? 3 : Math.max(3, board.length)) - board.length)
 
   return (
@@ -35,7 +35,7 @@ export function TableFelt({ scenario }) {
       />
 
       <div className="relative flex flex-wrap items-center justify-between gap-2">
-        <Stat icon={Coins} label="Pot" value={potUSD} />
+        <Stat icon={Coins} label="Pot" value={pot} />
         <Stat icon={Users} label="In hand" value={`${players} players`} />
         <Stat icon={Layers3} label="Effective" value={`${stackBB} BB`} />
       </div>
