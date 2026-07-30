@@ -24,14 +24,19 @@ function makeSeats(stack = 100 * BB) {
   }))
 }
 
-/** Plays one hand to completion with bots in every seat. */
-function playHand(seats, buttonSeat, rng) {
+/**
+ * Plays one hand to completion with bots in every seat.
+ *
+ * Postflop decisions run a Monte Carlo, so bulk runs dial the trial count down
+ * — the engine invariants under test do not care how precise the bots are.
+ */
+function playHand(seats, buttonSeat, rng, trials = 60) {
   let state = startHand({ seats, buttonSeat, handNumber: 1, rng })
   let guard = 0
   while (state.street !== 'complete') {
     guard += 1
     if (guard > 500) throw new Error('hand did not terminate')
-    const action = botAction(state, rng)
+    const action = botAction(state, rng, null, { trials })
     const next = applyAction(state, action)
     if (next === state) throw new Error(`engine rejected ${JSON.stringify(action)}`)
     state = next

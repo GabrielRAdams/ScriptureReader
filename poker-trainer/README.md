@@ -87,8 +87,17 @@ never adjust — which is the lesson.
 Each hand also reports the flop equity your hand actually held, so losing with
 the best of it stops feeling like a mistake.
 
-The bots are rule-based caricatures, not solvers. Beating them is practice at
-exploiting a soft pool, not proof of a winning strategy.
+Postflop, the bots decide on **equity against a modelled range**, not on
+hand-strength buckets. Each opponent's range starts from what they did preflop
+(raised ≈ top 18%, called ≈ 42%, checked the blind ≈ 60%) and tightens for
+every bet or raise they make; a Monte Carlo then answers "how often does my
+hand beat that?". Archetype differences become thresholds on that number — how
+far past correct pot odds a player will still call, and how much equity they
+need before betting for value.
+
+They are still rule-based, not solvers: the range model is coarse and nobody is
+computing a strategy. Beating them is practice at exploiting a soft pool, not
+proof of a winning strategy.
 
 Keyboard: `F` fold, `C` check/call, `Enter` next hand.
 
@@ -167,11 +176,18 @@ never leak into an online drill.
   (including all-ins that do not reopen action), street progression, side pots
   built from each player's total contribution, and odd-chip distribution to the
   first winner left of the button. Pure and rng-injectable, so it runs headlessly.
-- `src/lib/simBots.js` — archetype definitions, decision logic, and the
-  read-based adjustments that adapting regulars apply.
+- `src/lib/simBots.js` — archetype definitions, the equity-based postflop
+  decision logic, opponent range modelling, and the read-based adjustments that
+  adapting regulars apply.
 - `src/lib/simStats.js` — hand-log summarisation, derived stats, and the leak
   rules with their minimum samples.
-- `src/lib/equity.js` — Monte Carlo equity against random hands or a range.
+- `src/lib/equity.js` — Monte Carlo equity against random hands, one range, or
+  several ranges at once (dealing every villain in the same trial, so card
+  removal stays honest instead of raising equity to a power).
+- `src/lib/handEval.js` also exports `scoreOf`, a fast path that packs a hand
+  into one 32-bit integer. It is 16x quicker than the readable evaluator
+  (0.35µs vs 5.6µs), which is what makes an equity call inside every bot
+  decision affordable — a 4,000-hand headless run takes under two seconds.
 - `src/lib/bankroll.js` — risk of ruin, required bankroll, and variance.
 - `src/lib/handStrength.js` — Chen-formula preflop ranking, combo-weighted, so
   bots can reason in "top X% of hands".
@@ -182,7 +198,7 @@ deep-stack practice — a different game. Profit is tracked separately.
 
 ## Tests
 
-`npm test` runs 128 tests covering the parts where a silent bug would teach
+`npm test` runs 145 tests covering the parts where a silent bug would teach
 something false:
 
 - the evaluator against brute-force best-of-21-subsets, plus the known 7-card
@@ -190,6 +206,11 @@ something false:
   three pairs, six flush cards);
 - the equity engine against published matchups (AA vs KK ≈ 82%, AKs vs QQ ≈
   46%), symmetry, and card removal;
+- `scoreOf` against the readable evaluator on 20,000 random pairs, so the fast
+  path can never silently disagree with the one that is easy to read;
+- bot behaviour: a nit folds air to a big bet, a station calls a bluff-catcher
+  more often than the nit does, nobody folds a set, strong hands get bet, and no
+  archetype ever returns an action the engine would reject;
 - the betting engine over 3,000 hands — chips conserved, pots fully awarded, no
   negative or fractional stacks — plus min-raise rules, short all-ins that do
   not reopen action, blind posting and position naming;

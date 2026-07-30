@@ -10,7 +10,7 @@
  */
 
 import { BB, SB, makeDeck, shuffle } from './cards.js'
-import { compareScores, evaluate } from './handEval.js'
+import { evaluate, scoreOf } from './handEval.js'
 
 /** Seat offset from the button -> position name, for a full 6-max table. */
 const POSITIONS_6MAX = ['BTN', 'SB', 'BB', 'UTG', 'HJ', 'CO']
@@ -386,7 +386,8 @@ function finish(s, { uncontested = false } = {}) {
   const evaluated = new Map()
   if (showdown) {
     for (const p of live) {
-      evaluated.set(p.seat, evaluate([...p.hole, ...s.board]))
+      const result = evaluate([...p.hole, ...s.board])
+      evaluated.set(p.seat, { ...result, fast: scoreOf([...p.hole, ...s.board]) })
     }
   }
 
@@ -403,15 +404,14 @@ function finish(s, { uncontested = false } = {}) {
     if (!showdown || eligible.length === 1) {
       winners = eligible.slice(0, 1)
     } else {
-      let best = null
+      let best = -1
       winners = []
       for (const p of eligible) {
-        const score = evaluated.get(p.seat).score
-        const cmp = best ? compareScores(score, best) : 1
-        if (cmp > 0) {
+        const score = evaluated.get(p.seat).fast
+        if (score > best) {
           best = score
           winners = [p]
-        } else if (cmp === 0) {
+        } else if (score === best) {
           winners.push(p)
         }
       }

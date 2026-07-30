@@ -185,6 +185,168 @@ export function evaluate(cards) {
   }
 }
 
+/**
+ * Fast path: scores a hand as a single 32-bit integer, so comparing two hands
+ * is one numeric compare and the Monte Carlo in equity.js can run millions of
+ * evaluations without allocating.
+ *
+ * Layout (4 bits each, most significant first):
+ *   category | rank1 | rank2 | rank3 | rank4 | rank5
+ *
+ * `evaluate` above stays the readable version and is what produces hand names;
+ * a test asserts the two agree on ordering for random hands.
+ */
+
+// Reused across calls — this is single-threaded and never re-entrant.
+const rankCount = new Int8Array(13)
+const suitCount = new Int8Array(4)
+const suitMask = new Int32Array(4)
+
+const SUIT_INDEX = { s: 0, h: 1, d: 2, c: 3 }
+
+const pack = (cat, a = 0, b = 0, c = 0, d = 0, e = 0) =>
+  cat * 1048576 + a * 65536 + b * 4096 + c * 256 + d * 16 + e
+
+/**
+ * Highest card of a 5-run inside a rank bitmask, or -1.
+ *
+ * Shifting to a 14-bit mask with the ace duplicated at the bottom makes the
+ * wheel fall out of the same test as every other straight.
+ */
+function straightTopFromMask(mask) {
+  const m = (mask << 1) | ((mask >>> 12) & 1)
+  const runs = m & (m >>> 1) & (m >>> 2) & (m >>> 3) & (m >>> 4)
+  if (runs === 0) return -1
+  return 31 - Math.clz32(runs) + 4 - 1
+}
+
+export function scoreOf(cards) {
+  rankCount.fill(0)
+  suitCount.fill(0)
+  suitMask.fill(0)
+  let rankMask = 0
+
+  for (let i = 0; i < cards.length; i += 1) {
+    const card = cards[i]
+    const r = RANK_INDEX[card.charCodeAt(0)]
+    const s = SUIT_INDEX[card[1]]
+    rankCount[r] += 1
+    suitCount[s] += 1
+    suitMask[s] |= 1 << r
+    rankMask |= 1 << r
+  }
+
+  // Flush, and straight flush inside it.
+  let flushSuit = -1
+  for (let s = 0; s < 4; s += 1) {
+    if (suitCount[s] >= 5) {
+      flushSuit = s
+      break
+    }
+  }
+
+  if (flushSuit >= 0) {
+    const sfTop = straightTopFromMask(suitMask[flushSuit])
+    if (sfTop >= 0) return pack(CATEGORY.STRAIGHT_FLUSH, sfTop)
+  }
+
+  // Walk ranks once, high to low, collecting multiplicities.
+  let quad = -1
+  let trips1 = -1
+  let trips2 = -1
+  let pair1 = -1
+  let pair2 = -1
+  for (let r = 12; r >= 0; r -= 1) {
+    const n = rankCount[r]
+    if (n === 4) {
+      if (quad < 0) quad = r
+    } else if (n === 3) {
+      if (trips1 < 0) trips1 = r
+      else if (trips2 < 0) trips2 = r
+    } else if (n === 2) {
+      if (pair1 < 0) pair1 = r
+      else if (pair2 < 0) pair2 = r
+    }
+  }
+
+  if (quad >= 0) {
+    let kicker = -1
+    for (let r = 12; r >= 0; r -= 1) {
+      if (r !== quad && rankCount[r] > 0) {
+        kicker = r
+        break
+      }
+    }
+    return pack(CATEGORY.QUADS, quad, kicker)
+  }
+
+  if (trips1 >= 0 && (pair1 >= 0 || trips2 >= 0)) {
+    // With two sets the lower one plays as the pair.
+    const pairRank = trips2 > pair1 ? trips2 : pair1
+    return pack(CATEGORY.FULL_HOUSE, trips1, pairRank)
+  }
+
+  if (flushSuit >= 0) {
+    const mask = suitMask[flushSuit]
+    const top = []
+    for (let r = 12; r >= 0 && top.length < 5; r -= 1) {
+      if (mask & (1 << r)) top.push(r)
+    }
+    return pack(CATEGORY.FLUSH, top[0], top[1], top[2], top[3], top[4])
+  }
+
+  const straightTop = straightTopFromMask(rankMask)
+  if (straightTop >= 0) return pack(CATEGORY.STRAIGHT, straightTop)
+
+  if (trips1 >= 0) {
+    let k1 = -1
+    let k2 = -1
+    for (let r = 12; r >= 0; r -= 1) {
+      if (r === trips1 || rankCount[r] === 0) continue
+      if (k1 < 0) k1 = r
+      else if (k2 < 0) {
+        k2 = r
+        break
+      }
+    }
+    return pack(CATEGORY.TRIPS, trips1, k1, k2)
+  }
+
+  if (pair1 >= 0 && pair2 >= 0) {
+    let kicker = -1
+    for (let r = 12; r >= 0; r -= 1) {
+      if (r !== pair1 && r !== pair2 && rankCount[r] > 0) {
+        kicker = r
+        break
+      }
+    }
+    return pack(CATEGORY.TWO_PAIR, pair1, pair2, kicker)
+  }
+
+  if (pair1 >= 0) {
+    const k = []
+    for (let r = 12; r >= 0 && k.length < 3; r -= 1) {
+      if (r !== pair1 && rankCount[r] > 0) k.push(r)
+    }
+    return pack(CATEGORY.PAIR, pair1, k[0], k[1], k[2])
+  }
+
+  const high = []
+  for (let r = 12; r >= 0 && high.length < 5; r -= 1) {
+    if (rankCount[r] > 0) high.push(r)
+  }
+  return pack(CATEGORY.HIGH_CARD, high[0], high[1], high[2], high[3], high[4])
+}
+
+/** Rank character code -> 0-12, built once. */
+const RANK_INDEX = (() => {
+  const table = new Int8Array(128).fill(-1)
+  RANKS.forEach((r, i) => {
+    table[r.charCodeAt(0)] = i
+  })
+  return table
+})()
+
 /** >0 if a beats b, <0 if b beats a, 0 on an exact tie (chopped pot). */
 export function compareScores(a, b) {
   const len = Math.max(a.length, b.length)

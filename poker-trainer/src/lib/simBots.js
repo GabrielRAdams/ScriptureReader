@@ -12,11 +12,18 @@
  * people.
  */
 
-import { BB } from './cards.js'
+import { BB, handCode } from './cards.js'
+import { equityVsRanges, topPercentRange } from './equity.js'
 import { analyzeHand } from './handEval.js'
-import { handCode } from './cards.js'
-import { percentileOf } from './handStrength.js'
+import { HAND_RANKING, percentileOf } from './handStrength.js'
 import { legalActions, totalPot } from './pokerSim.js'
+
+/**
+ * Monte Carlo trials per postflop decision. 250 puts the standard error near
+ * 3%, which is far finer than the gaps between the archetype thresholds below
+ * and cheap enough to run thousands of hands headlessly.
+ */
+const EQUITY_TRIALS = 250
 
 export const ARCHETYPES = {
   nit: {
@@ -38,6 +45,11 @@ export const ARCHETYPES = {
     raiseValue: 0.55,
     foldToAggression: 0.75,
     adapts: true,
+    // How far past break-even pot odds this player will still call, and the
+    // equity they need before betting for value.
+    callSlack: -0.07,
+    minCallEquity: 0.25,
+    valueThreshold: 0.72,
   },
   tag: {
     id: 'tag',
@@ -58,6 +70,9 @@ export const ARCHETYPES = {
     raiseValue: 0.7,
     foldToAggression: 0.55,
     adapts: true,
+    callSlack: 0.01,
+    minCallEquity: 0.20,
+    valueThreshold: 0.64,
   },
   station: {
     id: 'station',
@@ -77,6 +92,9 @@ export const ARCHETYPES = {
     callDown: 'any-pair',
     raiseValue: 0.35,
     foldToAggression: 0.12,
+    callSlack: 0.10,
+    minCallEquity: 0.16,
+    valueThreshold: 0.7,
   },
   maniac: {
     id: 'maniac',
@@ -96,6 +114,9 @@ export const ARCHETYPES = {
     callDown: 'weak',
     raiseValue: 0.8,
     foldToAggression: 0.35,
+    callSlack: 0.06,
+    minCallEquity: 0.16,
+    valueThreshold: 0.58,
   },
   whale: {
     id: 'whale',
@@ -104,7 +125,7 @@ export const ARCHETYPES = {
     blurb: 'Plays every hand, limps constantly, chases every draw to the river.',
     tone: 'border-amber-500/40 bg-amber-500/15 text-amber-200',
     open: { UTG: 0.45, HJ: 0.5, CO: 0.56, BTN: 0.7, SB: 0.6, BB: 0.55 },
-    limp: 0.84,
+    limp: 0.9,
     callOpen: 0.65,
     threeBet: 0.03,
     callThreeBet: 0.35,
@@ -115,6 +136,9 @@ export const ARCHETYPES = {
     callDown: 'any-pair',
     raiseValue: 0.4,
     foldToAggression: 0.15,
+    callSlack: 0.12,
+    minCallEquity: 0.15,
+    valueThreshold: 0.68,
   },
 }
 
@@ -128,8 +152,6 @@ export const BOT_NAMES = {
   maniac: ['ShipItFish', 'RiverRat', 'AllInAndy', 'TiltCity'],
   whale: ['LuckyLimper', 'ChaseTheDream', 'SplashyPants', 'JustHere4Fun'],
 }
-
-const BUCKET_ORDER = ['air', 'weak', 'draw', 'medium', 'strong', 'monster']
 
 /**
  * Regulars adjust to how you have been playing; recreational players never do.
@@ -149,15 +171,16 @@ export function adjustProfile(profile, reads, heroIsOpponent) {
     adjusted.bluff = Math.min(0.8, profile.bluff + 0.15)
   }
 
-  // You barely bluff: he folds his marginal hands to your aggression.
+  // You barely bluff: he needs more equity to pay you off, so he folds more.
   if (reads.aggressionFactor != null && reads.aggressionFactor < 0.8) {
+    adjusted.callSlack = profile.callSlack - 0.1
     adjusted.foldToAggression = Math.min(0.9, profile.foldToAggression + 0.18)
   }
 
-  // You bluff constantly: he starts calling you down lighter.
+  // You bluff constantly: he calls with less equity than the odds justify.
   if (reads.aggressionFactor != null && reads.aggressionFactor > 2.5) {
+    adjusted.callSlack = profile.callSlack + 0.12
     adjusted.foldToAggression = Math.max(0.15, profile.foldToAggression - 0.22)
-    adjusted.callDown = 'weak'
   }
 
   // You play far too many hands: he 3-bets you wider.
@@ -166,10 +189,6 @@ export function adjustProfile(profile, reads, heroIsOpponent) {
   }
 
   return adjusted
-}
-
-function bucketAtLeast(bucket, floor) {
-  return BUCKET_ORDER.indexOf(bucket) >= BUCKET_ORDER.indexOf(floor)
 }
 
 /** Did anybody put in more than a big blind before the current actor? */
@@ -234,26 +253,89 @@ function preflopDecision(state, legal, actor, profile, rng) {
   return { type: 'fold' }
 }
 
-function postflopDecision(state, legal, actor, profile, rng) {
-  const analysis = analyzeHand(actor.hole, state.board)
+/**
+ * How wide an opponent's range still is, as a top-percent of all hands.
+ *
+ * Starts from what they did preflop and tightens for every bet or raise they
+ * have made since. It is a coarse model of a real player's range, but it is a
+ * model — which is the difference between a bot that knows "I have top pair"
+ * and one that knows "top pair is 38% here".
+ */
+function estimateRangePercent(state, villain) {
+  const actions = state.log.filter((l) => l.type === 'action' && l.seat === villain.seat)
+  const preflop = actions.filter((l) => l.street === 'preflop')
+
+  let percent
+  if (preflop.some((l) => l.action === 'raise')) percent = 0.18
+  else if (preflop.some((l) => l.action === 'call')) percent = 0.42
+  else percent = 0.6 // checked the big blind: essentially any two cards
+
+  // Postflop aggression is the strongest signal available.
+  for (const action of actions) {
+    if (action.street === 'preflop') continue
+    if (action.action === 'bet' || action.action === 'raise') percent *= 0.55
+    else if (action.action === 'call') percent *= 0.85
+  }
+
+  return Math.max(0.03, Math.min(1, percent))
+}
+
+/** Cached per (seat, street, board, hand) so a re-raise does not recompute. */
+const equityCache = new Map()
+
+function estimateEquity(state, actor, trials) {
+  const opponents = state.players.filter((p) => !p.folded && p.seat !== actor.seat)
+  if (opponents.length === 0) return 1
+
+  const key = `${actor.seat}|${state.street}|${state.board.join('')}|${actor.hole.join('')}|${opponents
+    .map((o) => `${o.seat}:${Math.round(estimateRangePercent(state, o) * 100)}`)
+    .join(',')}`
+  const cached = equityCache.get(key)
+  if (cached !== undefined) return cached
+
+  const ranges = opponents.map((o) =>
+    topPercentRange(estimateRangePercent(state, o), HAND_RANKING),
+  )
+  const { equity } = equityVsRanges(actor.hole, state.board, ranges, trials)
+
+  // Bounded so a long session cannot grow this without limit.
+  if (equityCache.size > 4000) equityCache.clear()
+  equityCache.set(key, equity)
+  return equity
+}
+
+/**
+ * Postflop decisions run on equity against a modelled range rather than on
+ * hand-strength buckets. Archetype differences become thresholds on that
+ * equity: how far past break-even pot odds a player will still call, and how
+ * much equity they need before betting for value.
+ */
+function postflopDecision(state, legal, actor, profile, rng, trials) {
   const pot = totalPot(state)
-  const { bucket, outs } = analysis
   const facingBet = legal.canCall && legal.callAmount > 0
+  const equity = estimateEquity(state, actor, trials)
+  const analysis = analyzeHand(actor.hole, state.board)
   const isPreflopAggressor = state.log.some(
-    (l) => l.type === 'action' && l.seat === actor.seat && l.text.startsWith('raises'),
+    (l) => l.type === 'action' && l.seat === actor.seat && l.street === 'preflop' && l.action === 'raise',
   )
 
   if (!facingBet) {
-    // Value betting.
-    if (bucketAtLeast(bucket, 'strong') && rng() < profile.raiseValue && legal.canRaise) {
-      const fraction = bucket === 'monster' ? 0.7 : 0.5
+    // Value: bet when equity clears the archetype's bar, sized by how far.
+    if (legal.canRaise && equity >= profile.valueThreshold && rng() < profile.raiseValue) {
+      const fraction = equity > 0.85 ? 0.7 : equity > 0.72 ? 0.6 : 0.45
       return { type: 'raise', amount: sizeBet(legal, actor, pot, fraction) }
     }
-    // Continuation betting and semi-bluffing.
+
+    // Bluffs and semi-bluffs: no showdown value, but fold equity or outs.
     const cbetChance = state.street === 'flop' && isPreflopAggressor ? profile.cbet : profile.barrel
-    const bluffChance = bucket === 'draw' ? Math.max(cbetChance, profile.bluff) : profile.bluff
-    if (legal.canRaise && rng() < bluffChance * (state.street === 'river' ? 0.6 : 1)) {
-      return { type: 'raise', amount: sizeBet(legal, actor, pot, bucket === 'draw' ? 0.6 : 0.45) }
+    const hasDraw = analysis.draw.flush || analysis.draw.oesd
+    const bluffChance = hasDraw ? Math.max(cbetChance, profile.bluff) : profile.bluff
+    if (
+      legal.canRaise &&
+      equity < profile.valueThreshold &&
+      rng() < bluffChance * (state.street === 'river' ? 0.6 : 1)
+    ) {
+      return { type: 'raise', amount: sizeBet(legal, actor, pot, hasDraw ? 0.6 : 0.45) }
     }
     if (legal.canCheck) return { type: 'check' }
   }
@@ -261,46 +343,26 @@ function postflopDecision(state, legal, actor, profile, rng) {
   if (facingBet) {
     const price = legal.callAmount / (pot + legal.callAmount)
 
-    // Raise for value with big hands.
-    if (bucket === 'monster' && legal.canRaise && rng() < profile.raiseValue) {
-      return { type: 'raise', amount: sizeBet(legal, actor, pot, 0.8) }
+    // Raise for value when far ahead of the range that is betting.
+    if (legal.canRaise && equity >= 0.8 && rng() < profile.raiseValue) {
+      return { type: 'raise', amount: sizeBet(legal, actor, pot, 0.75) }
     }
 
-    // Draws continue on price; loose players chase past it.
-    if (bucket === 'draw' || outs >= 8) {
-      const equity = state.street === 'river' ? 0 : outs * (state.street === 'flop' ? 0.04 : 0.02)
-      if (equity > price) return { type: 'call' }
-      if (rng() < (1 - profile.foldToAggression) * 0.6) return { type: 'call' }
-      return { type: 'fold' }
-    }
+    // Implied odds: a draw that is priced out now can still be worth a call
+    // when there are stacks left to win. Nits do not grant themselves this.
+    const drawing = analysis.outs >= 8 && state.street !== 'river'
+    const impliedBonus = drawing && actor.stack > pot * 1.5 ? 0.06 : 0
 
-    // Top pair and better call normal bets, but even a strong one-pair hand
-    // folds to enough pressure — without this, every pot runs to stacks.
-    if (bucketAtLeast(bucket, 'strong')) {
-      if (price <= 0.45) return { type: 'call' }
-      return rng() < profile.foldToAggression * 0.6 ? { type: 'fold' } : { type: 'call' }
-    }
+    // Slack is how far past correct odds they will call; the floor stops even
+    // the loosest player from calling with a genuinely hopeless hand, which is
+    // what "calls everything" degenerates into without it.
+    const threshold = Math.max(price - profile.callSlack - impliedBonus, profile.minCallEquity)
+    if (equity >= threshold) return { type: 'call' }
 
-    if (bucket === 'medium') {
-      // Stations are defined by this line: any pair, almost any price. They
-      // still let go of bottom pair facing a big river bet.
-      if (profile.callDown === 'any-pair') {
-        const ceiling = state.street === 'river' ? 0.5 : 0.62
-        if (price <= ceiling || rng() < 0.5) return { type: 'call' }
-        return { type: 'fold' }
-      }
-      if (price <= 0.33) return { type: 'call' }
-      return rng() < profile.foldToAggression ? { type: 'fold' } : { type: 'call' }
-    }
-
-    // Weak hands and air. Floating is rare and mostly a cheap, in-position
-    // move — without this the pool would fold to every single bet.
-    const floatChance = (1 - profile.foldToAggression) * (price < 0.3 ? 0.3 : 0.1)
-    if (bucket === 'weak' && (price < 0.25 || rng() < floatChance)) return { type: 'call' }
+    // Occasional bluff-raise, from the players who have that in their game.
     if (legal.canRaise && state.street !== 'river' && rng() < profile.bluff * 0.12) {
       return { type: 'raise', amount: sizeBet(legal, actor, pot, 0.7) }
     }
-    if (rng() < floatChance * 0.5) return { type: 'call' }
     return { type: 'fold' }
   }
 
@@ -319,7 +381,7 @@ function sizeBet(legal, actor, pot, fraction) {
  * `reads` is optional: pass the hero's tracked stats and any adapting regulars
  * at the table will use them when the hero is still in the pot.
  */
-export function botAction(state, rng = Math.random, reads = null) {
+export function botAction(state, rng = Math.random, reads = null, options = {}) {
   const legal = legalActions(state)
   if (!legal) return null
   const actor = legal.player
@@ -330,7 +392,7 @@ export function botAction(state, rng = Math.random, reads = null) {
   const decision =
     state.street === 'preflop'
       ? preflopDecision(state, legal, actor, profile, rng)
-      : postflopDecision(state, legal, actor, profile, rng)
+      : postflopDecision(state, legal, actor, profile, rng, options.trials ?? EQUITY_TRIALS)
 
   // Final safety net: never return an action the engine would reject.
   if (decision.type === 'check' && !legal.canCheck) {

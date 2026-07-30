@@ -11,7 +11,7 @@
  */
 
 import { makeDeck } from './cards.js'
-import { compareScores, evaluate } from './handEval.js'
+import { scoreOf } from './handEval.js'
 import { ALL_HANDS, combosOf } from './range.js'
 import { RANKS as RANK_CHARS } from './cards.js'
 
@@ -74,21 +74,21 @@ export function equityVsRandom(hole, board = [], opponents = 1, trials = 4000, r
     }
 
     const runout = [...board, ...drawn.slice(0, needed)]
-    const heroScore = evaluate([...hole, ...runout]).score
+    const heroScore = scoreOf([...hole, ...runout])
 
-    let best = 0
+    let beaten = false
     let tied = 0
     for (let o = 0; o < opponents; o += 1) {
       const villain = [drawn[needed + o * 2], drawn[needed + o * 2 + 1]]
-      const cmp = compareScores(evaluate([...villain, ...runout]).score, heroScore)
-      if (cmp > 0) {
-        best = 1
+      const villainScore = scoreOf([...villain, ...runout])
+      if (villainScore > heroScore) {
+        beaten = true
         break
       }
-      if (cmp === 0) tied += 1
+      if (villainScore === heroScore) tied += 1
     }
 
-    if (best === 1) continue
+    if (beaten) continue
     if (tied > 0) tie += 1 / (tied + 1)
     else win += 1
   }
@@ -112,28 +112,119 @@ export function equityVsRange(hole, board = [], range, trials = 3000, rng = Math
   let win = 0
   let tie = 0
 
+  // Build the deck once. The villain's two cards change every trial, so they
+  // are skipped during the draw rather than filtered out of a fresh deck —
+  // rebuilding a 52-card array per trial dominated the cost otherwise.
+  const base = without(makeDeck(), [...hole, ...board])
+  const pool = [...base]
+  const runout = [...board, ...new Array(needed).fill(null)]
+
   for (let t = 0; t < trials; t += 1) {
     const villain = combos[Math.floor(rng() * combos.length)]
-    const deck = without(makeDeck(), [...hole, ...board, ...villain])
+    const blockA = villain[0]
+    const blockB = villain[1]
 
-    const drawn = []
-    for (let i = 0; i < needed; i += 1) {
-      const j = i + Math.floor(rng() * (deck.length - i))
-      ;[deck[i], deck[j]] = [deck[j], deck[i]]
-      drawn.push(deck[i])
+    for (let k = 0; k < pool.length; k += 1) pool[k] = base[k]
+
+    let filled = 0
+    let i = 0
+    while (filled < needed) {
+      const j = i + Math.floor(rng() * (pool.length - i))
+      const card = pool[j]
+      pool[j] = pool[i]
+      pool[i] = card
+      i += 1
+      if (card === blockA || card === blockB) continue
+      runout[board.length + filled] = card
+      filled += 1
     }
-
-    const runout = [...board, ...drawn]
-    const cmp = compareScores(
-      evaluate([...hole, ...runout]).score,
-      evaluate([...villain, ...runout]).score,
-    )
-    if (cmp > 0) win += 1
-    else if (cmp === 0) tie += 1
+    const heroScore = scoreOf([...hole, ...runout])
+    const villainScore = scoreOf([...villain, ...runout])
+    if (heroScore > villainScore) win += 1
+    else if (heroScore === villainScore) tie += 1
   }
 
   const equity = (win + tie / 2) / trials
   return { win: win / trials, tie: tie / trials, lose: 1 - equity, equity, combos: combos.length }
+}
+
+/**
+ * Hero equity against several opponents, each drawn from their own range.
+ *
+ * Dealing every villain in the same trial keeps the card removal honest — two
+ * opponents can never hold the same card, and raising equity to a power (the
+ * usual shortcut for multiway) quietly ignores that.
+ */
+export function equityVsRanges(hole, board = [], ranges, trials = 2000, rng = Math.random) {
+  if (!ranges || ranges.length === 0) return { equity: 1, win: 1, tie: 0, lose: 0 }
+  if (ranges.length === 1) return equityVsRange(hole, board, ranges[0], trials, rng)
+
+  const comboSets = ranges.map((range) =>
+    (Array.isArray(range) && Array.isArray(range[0]) ? range : expandRange(range)).filter(
+      (combo) => !combo.some((c) => hole.includes(c) || board.includes(c)),
+    ),
+  )
+  if (comboSets.some((set) => set.length === 0)) {
+    return equityVsRandom(hole, board, ranges.length, trials, rng)
+  }
+
+  const needed = 5 - board.length
+  const base = without(makeDeck(), [...hole, ...board])
+  const pool = [...base]
+  const runout = [...board, ...new Array(needed).fill(null)]
+  let win = 0
+  let tie = 0
+
+  for (let t = 0; t < trials; t += 1) {
+    // Draw one hand per villain, retrying the whole trial on a card clash
+    // rather than biasing the sample by patching it up.
+    const villains = []
+    const used = new Set()
+    let clash = false
+    for (const set of comboSets) {
+      const combo = set[Math.floor(rng() * set.length)]
+      if (used.has(combo[0]) || used.has(combo[1])) {
+        clash = true
+        break
+      }
+      used.add(combo[0])
+      used.add(combo[1])
+      villains.push(combo)
+    }
+    if (clash) continue
+
+    for (let k = 0; k < pool.length; k += 1) pool[k] = base[k]
+    let filled = 0
+    let i = 0
+    while (filled < needed && i < pool.length) {
+      const j = i + Math.floor(rng() * (pool.length - i))
+      const card = pool[j]
+      pool[j] = pool[i]
+      pool[i] = card
+      i += 1
+      if (used.has(card)) continue
+      runout[board.length + filled] = card
+      filled += 1
+    }
+
+    const heroScore = scoreOf([...hole, ...runout])
+    let beaten = false
+    let tied = 0
+    for (const villain of villains) {
+      const score = scoreOf([...villain, ...runout])
+      if (score > heroScore) {
+        beaten = true
+        break
+      }
+      if (score === heroScore) tied += 1
+    }
+    if (beaten) continue
+    if (tied > 0) tie += 1 / (tied + 1)
+    else win += 1
+  }
+
+  const equity = (win + tie) / trials
+  return { win: win / trials, tie: tie / trials, lose: 1 - equity, equity }
 }
 
 /**
