@@ -13,7 +13,8 @@
  */
 
 import { BB, handCode } from './cards.js'
-import { equityVsRanges, topPercentRange } from './equity.js'
+import { equityVsRanges, expandRange, topPercentRange } from './equity.js'
+import { CONTINUE_TIERS, filterCombosByBoard } from './rangeFilter.js'
 import { analyzeHand } from './handEval.js'
 import { HAND_RANKING, percentileOf } from './handStrength.js'
 import { legalActions, totalPot } from './pokerSim.js'
@@ -262,22 +263,46 @@ function preflopDecision(state, legal, actor, profile, rng) {
  * and one that knows "top pair is 38% here".
  */
 function estimateRangePercent(state, villain) {
-  const actions = state.log.filter((l) => l.type === 'action' && l.seat === villain.seat)
-  const preflop = actions.filter((l) => l.street === 'preflop')
+  const preflop = state.log.filter(
+    (l) => l.type === 'action' && l.seat === villain.seat && l.street === 'preflop',
+  )
 
-  let percent
-  if (preflop.some((l) => l.action === 'raise')) percent = 0.18
-  else if (preflop.some((l) => l.action === 'call')) percent = 0.42
-  else percent = 0.6 // checked the big blind: essentially any two cards
+  if (preflop.some((l) => l.action === 'raise')) return 0.18
+  if (preflop.some((l) => l.action === 'call')) return 0.42
+  return 0.6 // checked the big blind: essentially any two cards
+}
 
-  // Postflop aggression is the strongest signal available.
-  for (const action of actions) {
-    if (action.street === 'preflop') continue
-    if (action.action === 'bet' || action.action === 'raise') percent *= 0.55
-    else if (action.action === 'call') percent *= 0.85
-  }
+/**
+ * How much of that preflop range is still in the hand, given the board.
+ *
+ * A percentile alone counts every hand that missed completely. Filtering by the
+ * board is what separates "villain has top 42% of hands" from "villain called a
+ * bet on K-9-4, so he has a king, a nine, a pair or a draw" — which is a
+ * different hand to be up against.
+ */
+function continueTier(state, villain) {
+  const postflop = state.log.filter(
+    (l) => l.type === 'action' && l.seat === villain.seat && l.street !== 'preflop',
+  )
+  if (postflop.length === 0) return null // has not acted yet: no information
 
-  return Math.max(0.03, Math.min(1, percent))
+  const aggressive = postflop.filter((l) => l.action === 'bet' || l.action === 'raise').length
+  const calls = postflop.filter((l) => l.action === 'call').length
+
+  // Betting twice is a much stronger statement than calling twice.
+  if (aggressive >= 2) return CONTINUE_TIERS.value
+  if (aggressive === 1) return CONTINUE_TIERS.call
+  if (calls >= 2) return CONTINUE_TIERS.call
+  if (calls === 1) return CONTINUE_TIERS.float
+  return null
+}
+
+/** The combos a villain can still hold, given position, action and board. */
+export function modelRange(state, villain) {
+  const combos = expandRange(topPercentRange(estimateRangePercent(state, villain), HAND_RANKING))
+  const tier = continueTier(state, villain)
+  if (!tier || state.board.length === 0) return combos
+  return filterCombosByBoard(combos, state.board, tier)
 }
 
 /** Cached per (seat, street, board, hand) so a re-raise does not recompute. */
@@ -288,14 +313,12 @@ function estimateEquity(state, actor, trials) {
   if (opponents.length === 0) return 1
 
   const key = `${actor.seat}|${state.street}|${state.board.join('')}|${actor.hole.join('')}|${opponents
-    .map((o) => `${o.seat}:${Math.round(estimateRangePercent(state, o) * 100)}`)
+    .map((o) => `${o.seat}:${Math.round(estimateRangePercent(state, o) * 100)}:${continueTier(state, o) ?? '-'}`)
     .join(',')}`
   const cached = equityCache.get(key)
   if (cached !== undefined) return cached
 
-  const ranges = opponents.map((o) =>
-    topPercentRange(estimateRangePercent(state, o), HAND_RANKING),
-  )
+  const ranges = opponents.map((o) => modelRange(state, o))
   const { equity } = equityVsRanges(actor.hole, state.board, ranges, trials)
 
   // Bounded so a long session cannot grow this without limit.
@@ -373,6 +396,27 @@ function postflopDecision(state, legal, actor, profile, rng, trials) {
 function sizeBet(legal, actor, pot, fraction) {
   const target = actor.committed + legal.callAmount + Math.round((pot + legal.callAmount) * fraction)
   return Math.max(legal.minRaiseTo, Math.min(target, legal.maxRaiseTo))
+}
+
+const STREET_ORDER = ['preflop', 'flop', 'turn', 'river']
+const BOARD_SIZE = { preflop: 0, flop: 3, turn: 4, river: 5 }
+
+/**
+ * The ranges each live opponent held as of a given street — the same model the
+ * bots use, replayed against a trimmed history. The sim uses this to report what
+ * your equity actually was, instead of assuming opponents held random cards,
+ * which flatters every hand you played.
+ */
+export function rangesAtStreet(hand, heroSeat, street) {
+  const allowed = STREET_ORDER.slice(0, STREET_ORDER.indexOf(street) + 1)
+  const trimmed = {
+    ...hand,
+    board: hand.board.slice(0, BOARD_SIZE[street]),
+    log: hand.log.filter((l) => l.type !== 'action' || allowed.includes(l.street)),
+  }
+  return hand.players
+    .filter((p) => !p.folded && p.seat !== heroSeat)
+    .map((villain) => modelRange(trimmed, villain))
 }
 
 /**

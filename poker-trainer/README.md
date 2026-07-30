@@ -89,11 +89,15 @@ the best of it stops feeling like a mistake.
 
 Postflop, the bots decide on **equity against a modelled range**, not on
 hand-strength buckets. Each opponent's range starts from what they did preflop
-(raised ≈ top 18%, called ≈ 42%, checked the blind ≈ 60%) and tightens for
-every bet or raise they make; a Monte Carlo then answers "how often does my
-hand beat that?". Archetype differences become thresholds on that number — how
-far past correct pot odds a player will still call, and how much equity they
-need before betting for value.
+(raised ≈ top 18%, called ≈ 42%, checked the blind ≈ 60%) and is then **filtered
+by the board**: a player who called a bet on K-9-4 is modelled as holding a
+king, a nine, a pair or a draw — not "the top 42% of preflop hands", most of
+which missed completely. Betting twice narrows it further than calling twice.
+A Monte Carlo then answers "how often does my hand beat that?".
+
+Archetype differences become thresholds on that number — how far past correct
+pot odds a player will still call, and how much equity they need before betting
+for value.
 
 They are still rule-based, not solvers: the range model is coarse and nobody is
 computing a strategy. Beating them is practice at exploiting a soft pool, not
@@ -179,6 +183,10 @@ never leak into an online drill.
 - `src/lib/simBots.js` — archetype definitions, the equity-based postflop
   decision logic, opponent range modelling, and the read-based adjustments that
   adapting regulars apply.
+- `src/lib/rangeFilter.js` — board-aware range narrowing. Classifies a combo
+  against a board (set, top pair, pair, flush draw, open-ender, gutshot,
+  overcards, air) using rank and suit arithmetic rather than hand evaluation,
+  because it runs over several hundred combos inside every decision.
 - `src/lib/simStats.js` — hand-log summarisation, derived stats, and the leak
   rules with their minimum samples.
 - `src/lib/equity.js` — Monte Carlo equity against random hands, one range, or
@@ -192,13 +200,17 @@ never leak into an online drill.
 - `src/lib/handStrength.js` — Chen-formula preflop ranking, combo-weighted, so
   bots can reason in "top X% of hands".
 
+Measured over 4,000 headless hands: median pot 12.4bb (a real NL10 table runs
+~10-12bb), 58% of hands reach the river, 2.2% reach an all-in, and each
+archetype's VPIP/PFR tracks its advertised line.
+
 Every hand is dealt 100bb effective. Real winners cash out and get replaced by
 a fresh buy-in, and letting stacks drift to 400bb would quietly turn this into
 deep-stack practice — a different game. Profit is tracked separately.
 
 ## Tests
 
-`npm test` runs 145 tests covering the parts where a silent bug would teach
+`npm test` runs 162 tests covering the parts where a silent bug would teach
 something false:
 
 - the evaluator against brute-force best-of-21-subsets, plus the known 7-card
@@ -211,6 +223,10 @@ something false:
 - bot behaviour: a nit folds air to a big bet, a station calls a bluff-catcher
   more often than the nit does, nobody folds a set, strong hands get bet, and no
   archetype ever returns an action the engine would reject;
+- range modelling: a preflop raiser is given a tighter range than a caller,
+  ranges narrow once a villain acts on the board, a bettor is modelled as
+  stronger than a caller, and a filtered range is measurably harder to beat than
+  the unfiltered one (the whole point of filtering);
 - the betting engine over 3,000 hands — chips conserved, pots fully awarded, no
   negative or fractional stacks — plus min-raise rules, short all-ins that do
   not reopen action, blind posting and position naming;

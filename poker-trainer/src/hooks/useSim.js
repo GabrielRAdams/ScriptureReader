@@ -3,9 +3,9 @@ import { useCallback, useEffect, useMemo, useReducer, useRef } from 'react'
 import { BB, handCode } from '@/lib/cards'
 import { CHARTS } from '@/data/ranges'
 import { buildChart } from '@/lib/range'
-import { equityVsRandom } from '@/lib/equity'
+import { equityVsRanges } from '@/lib/equity'
 import { applyAction, legalActions, startHand } from '@/lib/pokerSim'
-import { ARCHETYPES, BOT_NAMES, DEFAULT_TABLE, botAction } from '@/lib/simBots'
+import { ARCHETYPES, BOT_NAMES, DEFAULT_TABLE, botAction, rangesAtStreet } from '@/lib/simBots'
 import { EMPTY_TOTALS, addTotals, deriveStats, detectLeaks, pendingChecks, summariseHand } from '@/lib/simStats'
 import { loadSlice, saveSlice } from '@/lib/storage'
 
@@ -80,11 +80,14 @@ function reducer(state, action) {
           isHero: p.isHero,
         }))
 
-        // Only worth computing when hero actually contested the pot.
+        // Only worth computing when hero actually contested the pot. Ranges
+        // are modelled from what opponents did preflop rather than assumed
+        // random — random hands would flatter every hand the hero played.
         const hero = next.players.find((p) => p.isHero)
         const opponents = next.players.filter((p) => !p.folded && !p.isHero).length
         if (!hero.folded && opponents > 0 && next.board.length === 5) {
-          lastEquity = equityVsRandom(hero.hole, next.board.slice(0, 3), opponents, 1500).equity
+          const ranges = rangesAtStreet(next, hero.seat, 'preflop')
+          lastEquity = equityVsRanges(hero.hole, next.board.slice(0, 3), ranges, 1500).equity
         }
       }
 

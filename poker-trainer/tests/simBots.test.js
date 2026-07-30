@@ -2,10 +2,10 @@ import { describe, expect, it } from 'vitest'
 
 import { BB } from '@/lib/cards'
 import { evaluate, compareScores, scoreOf } from '@/lib/handEval'
-import { equityVsRandom, equityVsRange, equityVsRanges } from '@/lib/equity'
+import { equityVsRange, equityVsRanges } from '@/lib/equity'
 import { makeDeck, shuffle } from '@/lib/cards'
 import { startHand } from '@/lib/pokerSim'
-import { ARCHETYPES, adjustProfile, botAction } from '@/lib/simBots'
+import { ARCHETYPES, adjustProfile, botAction, modelRange, rangesAtStreet } from '@/lib/simBots'
 
 function seeded(seed = 1) {
   let s = seed
@@ -221,5 +221,62 @@ describe('adaptive regulars', () => {
   it('calls lighter against a hero who bluffs constantly', () => {
     const adjusted = adjustProfile(ARCHETYPES.tag, { ...reads, aggressionFactor: 4 }, true)
     expect(adjusted.callSlack).toBeGreaterThan(ARCHETYPES.tag.callSlack)
+  })
+})
+
+describe('opponent range modelling', () => {
+  /** A hand where one villain raised preflop and one called, then both bet the flop. */
+  function playedHand() {
+    const seats = ['tag', 'station', 'nit', 'whale', 'maniac', 'tag'].map((archetype, i) => ({
+      id: i,
+      name: `P${i}`,
+      archetype,
+      stack: 100 * BB,
+      isHero: i === 0,
+    }))
+    const hand = startHand({ seats, buttonSeat: 3, handNumber: 1, rng: seeded(31) })
+    hand.board = ['Kh', '9d', '4s']
+    hand.street = 'flop'
+    hand.players.forEach((p, i) => {
+      p.folded = i > 2 // hero plus two villains
+    })
+    hand.log = [
+      { type: 'action', action: 'raise', street: 'preflop', seat: 1, name: 'P1', text: 'raises to 2.5bb' },
+      { type: 'action', action: 'call', street: 'preflop', seat: 2, name: 'P2', text: 'calls 2.5bb' },
+      { type: 'action', action: 'bet', street: 'flop', seat: 1, name: 'P1', text: 'bets 4bb' },
+      { type: 'action', action: 'call', street: 'flop', seat: 2, name: 'P2', text: 'calls 4bb' },
+    ]
+    return hand
+  }
+
+  it('gives the preflop raiser a tighter range than the caller', () => {
+    const hand = playedHand()
+    // Compare before any board filtering by looking at a preflop-only replay.
+    const [raiser, caller] = rangesAtStreet(hand, 0, 'preflop')
+    expect(raiser.length).toBeLessThan(caller.length)
+  })
+
+  it('narrows a range once the villain acts on the board', () => {
+    const hand = playedHand()
+    const preflop = rangesAtStreet(hand, 0, 'preflop')
+    const flop = rangesAtStreet(hand, 0, 'flop')
+    // Both villains put money in on the flop, so both ranges must shrink.
+    expect(flop[0].length).toBeLessThan(preflop[0].length)
+    expect(flop[1].length).toBeLessThan(preflop[1].length)
+  })
+
+  it('models the bettor as stronger than the caller on the same board', () => {
+    const hand = playedHand()
+    const [bettor, caller] = rangesAtStreet(hand, 0, 'flop')
+    expect(bettor.length).toBeLessThan(caller.length)
+  })
+
+  it('leaves a villain who has not acted postflop unfiltered', () => {
+    const hand = playedHand()
+    hand.log = hand.log.filter((l) => l.street === 'preflop')
+    const villain = hand.players.find((p) => p.seat === 2)
+    const modelled = modelRange(hand, villain)
+    // No postflop information yet, so the board cannot narrow anything.
+    expect(modelled.length).toBeGreaterThan(200)
   })
 })

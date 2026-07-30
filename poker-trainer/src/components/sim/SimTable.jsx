@@ -251,9 +251,10 @@ export function SimTable() {
                 <span className="font-semibold text-foreground/80">
                   Flop equity: {Math.round(lastEquity * 100)}%
                 </span>{' '}
-                — what your hand was worth against {hand.players.filter((p) => !p.folded && !p.isHero).length}{' '}
-                random opponent hand{hand.players.filter((p) => !p.folded && !p.isHero).length === 1 ? '' : 's'} when
-                the flop landed. Losing with the best of it is not a mistake.
+                — what your hand was worth when the flop landed, against the ranges your{' '}
+                {hand.players.filter((p) => !p.folded && !p.isHero).length} opponent
+                {hand.players.filter((p) => !p.folded && !p.isHero).length === 1 ? '' : 's'} had shown
+                preflop. Losing with the best of it is not a mistake.
               </p>
             ) : null}
 
