@@ -1,0 +1,13 @@
+{
+  "name": "Poker Scenario Trainer",
+  "short_name": "Poker Trainer",
+  "description": "Exploitative decision drills, preflop range charts, and pot-odds math for online micro stakes and live cash games.",
+  "start_url": "/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#0b1220",
+  "theme_color": "#0b1220",
+  "icons": [
+    { "src": "/favicon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }
+  ]
+}
